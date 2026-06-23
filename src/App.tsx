@@ -5,9 +5,13 @@ import {
   BrainCircuit,
   BriefcaseBusiness,
   Building2,
+  ChartNoAxesColumnIncreasing,
   CheckCircle2,
   ChevronRight,
   Compass,
+  Database,
+  ExternalLink,
+  FileText,
   GraduationCap,
   Layers3,
   MapPin,
@@ -89,6 +93,38 @@ function wait(ms: number) {
 
 function cnPercent(probability: number) {
   return `${Math.round(probability * 100)}%`;
+}
+
+function dataModeLabel(mode: Recommendation["dataMode"]) {
+  const labels = {
+    verified: "真实核验",
+    partial: "部分真实",
+    sample: "示例结构",
+    unavailable: "暂无数据"
+  };
+  return labels[mode] ?? "未知";
+}
+
+function riskLevelLabel(level: Recommendation["riskLevel"]) {
+  const labels = {
+    high: "高风险",
+    medium: "中风险",
+    low: "低风险"
+  };
+  return labels[level] ?? "未知风险";
+}
+
+function trendLabel(direction: Recommendation["admissionTrend"]["direction"]) {
+  const labels = {
+    rising: "位次趋紧",
+    stable: "基本稳定",
+    declining: "位次放宽"
+  };
+  return labels[direction] ?? "趋势未知";
+}
+
+function uniqueBy<T>(items: T[], getKey: (item: T) => string) {
+  return [...new Map(items.map((item) => [getKey(item), item])).values()];
 }
 
 function useCardTilt() {
@@ -214,6 +250,12 @@ function RecommendationCard({
         <GraduationCap size={16} />
         <span>{item.major}</span>
       </div>
+      <div className="source-row">
+        <span className={`source-chip ${item.dataMode}`}>{dataModeLabel(item.dataMode)}</span>
+        <span>{item.admissionTrend.latestYear} 年</span>
+        <span>gap {item.rankGap.toLocaleString("zh-CN")}</span>
+        <span className={`risk-chip ${item.riskLevel}`}>{riskLevelLabel(item.riskLevel)}</span>
+      </div>
       <p className="reason">{item.reason}</p>
       <div className="risk-box">
         <span>风险说明</span>
@@ -273,6 +315,10 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
                 <span>志愿梯度</span>
                 <strong>{groupMeta[item.category].title}</strong>
               </div>
+              <div>
+                <span>数据状态</span>
+                <strong>{dataModeLabel(item.dataMode)}</strong>
+              </div>
             </div>
 
             <section className="detail-section">
@@ -281,12 +327,93 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
                 学校预览
               </h3>
               <p>{item.schoolProfile.summary}</p>
+              <div className="profile-facts">
+                <span>{item.schoolProfile.level}</span>
+                <span>{item.schoolProfile.location}</span>
+                <span>{item.schoolProfile.ownership}</span>
+                <span>{item.schoolProfile.educationType}</span>
+              </div>
               <div className="mini-grid">
                 {item.schoolProfile.strengths.map((strength) => (
                   <span key={strength}>{strength}</span>
                 ))}
               </div>
+              <p>{item.schoolProfile.campusAndEmployment}</p>
+              <div className="detail-columns">
+                <div>
+                  <span>优势学科</span>
+                  <ul>
+                    {item.schoolProfile.advantagedDisciplines.map((discipline) => (
+                      <li key={discipline}>{discipline}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <span>特色专业</span>
+                  <ul>
+                    {item.schoolProfile.featuredMajors.map((major) => (
+                      <li key={major}>{major}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
               <div className="insight-note">{item.schoolProfile.admissionInsight}</div>
+            </section>
+
+            <section className="detail-section">
+              <h3>
+                <ChartNoAxesColumnIncreasing size={18} />
+                概率拆解
+              </h3>
+              <p>{item.probabilityExplanation.narrative}</p>
+              <div className="probability-breakdown">
+                {Object.entries(item.probabilityExplanation.factors).map(([key, value]) => (
+                  <div key={key}>
+                    <span>{key}</span>
+                    <strong>{key === "final" || key === "base" ? cnPercent(value) : value.toFixed(3)}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="insight-note">
+                gap {item.probabilityExplanation.gap.toLocaleString("zh-CN")} · z {item.probabilityExplanation.z} ·{" "}
+                {item.probabilityExplanation.formula}
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <h3>
+                <FileText size={18} />
+                录取证据与趋势
+              </h3>
+              <div className="trend-grid">
+                <div>
+                  <span>最新年份</span>
+                  <strong>{item.admissionTrend.latestYear}</strong>
+                </div>
+                <div>
+                  <span>趋势</span>
+                  <strong>{trendLabel(item.admissionTrend.direction)}</strong>
+                </div>
+                <div>
+                  <span>波动</span>
+                  <strong>{item.admissionTrend.volatility}</strong>
+                </div>
+              </div>
+              <p>{item.admissionTrend.summary}</p>
+              <ul className="evidence-list">
+                {item.evidence.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <div className="source-list">
+                {uniqueBy(item.dataSources, (source) => source.id).map((source) => (
+                  <a href={source.sourceUrl} target="_blank" rel="noreferrer" key={source.id}>
+                    <Database size={15} />
+                    <span>{source.sourceName}</span>
+                    <ExternalLink size={13} />
+                  </a>
+                ))}
+              </div>
             </section>
 
             <section className="detail-section">
@@ -309,6 +436,24 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
               <p>{item.careerGuide.overview}</p>
               <div className="detail-columns">
                 <div>
+                  <span>核心课程</span>
+                  <ul>
+                    {item.careerGuide.coreCourses.map((course) => (
+                      <li key={course}>{course}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <span>适合学生</span>
+                  <ul>
+                    {item.careerGuide.suitableStudents.map((trait) => (
+                      <li key={trait}>{trait}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+              <div className="detail-columns">
+                <div>
                   <span>方向</span>
                   <ul>
                     {item.careerGuide.directions.map((direction) => (
@@ -323,6 +468,21 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
                       <li key={role}>{role}</li>
                     ))}
                   </ul>
+                </div>
+              </div>
+              <p>{item.careerGuide.industryOutlook}</p>
+              <div className="detail-columns">
+                <div>
+                  <span>考研方向</span>
+                  <ul>
+                    {item.careerGuide.graduateDirections.map((direction) => (
+                      <li key={direction}>{direction}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <span>风险提醒</span>
+                  <p>{item.careerGuide.riskReminder}</p>
                 </div>
               </div>
               <div className="skill-row">
@@ -382,6 +542,27 @@ export function App() {
   }, []);
 
   const activeItems = useMemo(() => results?.[activeGroup] ?? [], [activeGroup, results]);
+  const allResults = useMemo(() => (results ? [...results.reach, ...results.match, ...results.safety] : []), [results]);
+  const resultOverview = useMemo(() => {
+    const countBy = <Key extends string>(items: Recommendation[], getKey: (item: Recommendation) => Key) =>
+      items.reduce<Record<Key, number>>((acc, item) => {
+        const key = getKey(item);
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {} as Record<Key, number>);
+    const latestYear = allResults.reduce<number | null>(
+      (latest, item) => (latest === null ? item.admissionTrend.latestYear : Math.max(latest, item.admissionTrend.latestYear)),
+      null
+    );
+    return {
+      total: allResults.length,
+      byMode: countBy(allResults, (item) => item.dataMode),
+      byRisk: countBy(allResults, (item) => item.riskLevel),
+      topCities: Object.entries(countBy(allResults, (item) => item.city)).slice(0, 4),
+      topMajors: Object.entries(countBy(allResults, (item) => item.major)).slice(0, 4),
+      latestYear
+    };
+  }, [allResults]);
   const filteredMajorOptions = useMemo(() => {
     const query = majorQuery.trim().toLowerCase();
     if (!query) return majorOptions;
@@ -473,6 +654,22 @@ export function App() {
           <span>规则模型</span>
           <strong>gap / z / sigmoid</strong>
         </div>
+      </section>
+
+      <section className="trust-banner">
+        <div>
+          <Database size={20} />
+          <div>
+            <span>Real Data Readiness</span>
+            <p>
+              当前内置为来源可追踪的示例结构。正式填报必须导入各省教育考试院、阳光高考、学校招生网等权威数据，缺失数据不会伪装成真实结果。
+            </p>
+          </div>
+        </div>
+        <a href="https://gaokao.chsi.com.cn/" target="_blank" rel="noreferrer">
+          阳光高考
+          <ExternalLink size={14} />
+        </a>
       </section>
 
       <section className="hero-grid">
@@ -627,6 +824,33 @@ export function App() {
           </div>
 
           <ThoughtPanel isGenerating={isGenerating} stepIndex={thoughtStep} />
+
+          {results && (
+            <div className="overview-grid">
+              <div>
+                <span>总推荐</span>
+                <strong>{resultOverview.total}</strong>
+                <p>冲刺 / 稳妥 / 保底</p>
+              </div>
+              <div>
+                <span>数据状态</span>
+                <strong>{Object.entries(resultOverview.byMode).map(([mode, count]) => `${dataModeLabel(mode as Recommendation["dataMode"])} ${count}`).join(" · ")}</strong>
+                <p>缺少权威导入时仅作结构演示</p>
+              </div>
+              <div>
+                <span>风险分布</span>
+                <strong>
+                  高 {resultOverview.byRisk.high ?? 0} · 中 {resultOverview.byRisk.medium ?? 0} · 低 {resultOverview.byRisk.low ?? 0}
+                </strong>
+                <p>由概率区间与梯度共同判定</p>
+              </div>
+              <div>
+                <span>最新年份</span>
+                <strong>{resultOverview.latestYear ?? "-"}</strong>
+                <p>{resultOverview.topCities.map(([city, count]) => `${city}${count}`).join(" / ")}</p>
+              </div>
+            </div>
+          )}
 
           <div className="group-tabs" role="tablist" aria-label="志愿分组">
             {(Object.keys(groupMeta) as GroupKey[]).map((key) => {

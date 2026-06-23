@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { getRecommendations } from "../shared/recommendation";
+import { getDataCoverage, getDataSources, importAdmissionData } from "../shared/real-data-store";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const clientDistPath = resolve(currentDir, "../../dist");
@@ -50,6 +51,39 @@ export function createRecommendApp() {
     }
 
     response.json(getRecommendations(parsed.data));
+  });
+
+  app.get("/data-sources", (_request, response) => {
+    response.json(getDataSources());
+  });
+
+  app.get("/data-coverage", (_request, response) => {
+    response.json(getDataCoverage());
+  });
+
+  app.post("/data/import", (request, response) => {
+    if (!Array.isArray(request.body)) {
+      response.status(400).json({
+        error: "INVALID_IMPORT_RECORDS",
+        result: {
+          accepted: 0,
+          rejected: 0,
+          errors: [{ index: 0, message: "Request body must be an array of admission records" }]
+        }
+      });
+      return;
+    }
+
+    const result = importAdmissionData(request.body);
+    if (result.accepted === 0) {
+      response.status(400).json({
+        error: "INVALID_IMPORT_RECORDS",
+        result
+      });
+      return;
+    }
+
+    response.json({ result, coverage: getDataCoverage() });
   });
 
   if (existsSync(clientIndexPath)) {

@@ -27,6 +27,13 @@ describe("POST /recommend", () => {
       expect.objectContaining({
         schoolName: expect.any(String),
         probability: expect.any(Number),
+        dataMode: expect.any(String),
+        dataSource: expect.objectContaining({
+          sourceUrl: expect.any(String)
+        }),
+        probabilityExplanation: expect.objectContaining({
+          formula: expect.stringContaining("1 / (1 + exp")
+        }),
         reason: expect.any(String),
         risk: expect.any(String),
         alternative: expect.objectContaining({
@@ -52,5 +59,27 @@ describe("POST /recommend", () => {
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("INVALID_RECOMMEND_REQUEST");
     expect(response.body.details.length).toBeGreaterThan(0);
+  });
+
+  it("returns source coverage for the loaded admission dataset", async () => {
+    const app = createRecommendApp();
+
+    const response = await request(app).get("/data-coverage");
+
+    expect(response.status).toBe(200);
+    expect(response.body.totalRecords).toBeGreaterThan(0);
+    expect(response.body.byMode.sample).toBeGreaterThan(0);
+    expect(response.body.latestYear).toBeGreaterThanOrEqual(2025);
+  });
+
+  it("rejects admission data imports that are missing source metadata", async () => {
+    const app = createRecommendApp();
+
+    const response = await request(app).post("/data/import").send([{ schoolName: "缺来源大学" }]);
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("INVALID_IMPORT_RECORDS");
+    expect(response.body.result.accepted).toBe(0);
+    expect(response.body.result.errors.length).toBeGreaterThan(0);
   });
 });

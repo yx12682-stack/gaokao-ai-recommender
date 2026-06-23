@@ -1,3 +1,6 @@
+import type { AdmissionTrend, DataMode, DataSource, ProbabilityExplanation, RiskLevel } from "./data-model";
+import { getAdmissionDataset } from "./real-data-store";
+
 export type RiskPreference = "conservative" | "balanced" | "aggressive";
 export type SubjectType = "physics" | "history" | "science" | "arts" | "comprehensive";
 export type RecommendationCategory = "reach" | "match" | "safety";
@@ -8,6 +11,15 @@ export interface School {
   province: string;
   type: string;
   city: string;
+  level?: string;
+  ownership?: string;
+  educationType?: string;
+  featuredMajors?: string[];
+  advantagedDisciplines?: string[];
+  campusAndEmployment?: string;
+  suitableFor?: string[];
+  dataMode?: DataMode;
+  dataSources?: DataSource[];
 }
 
 export interface AdmissionStat {
@@ -18,6 +30,10 @@ export interface AdmissionStat {
   minRank: number;
   avgRank: number;
   stdRank: number;
+  planCount?: number;
+  subjectRequirement?: string;
+  dataMode?: DataMode;
+  dataSource?: DataSource;
 }
 
 export interface RecommendInput {
@@ -55,16 +71,29 @@ export interface AlternativeSchool {
 
 export interface SchoolProfile {
   summary: string;
+  level: string;
+  location: string;
+  ownership: string;
+  educationType: string;
   strengths: string[];
+  featuredMajors: string[];
+  advantagedDisciplines: string[];
+  suitableFor: string[];
   admissionInsight: string;
+  campusAndEmployment: string;
   campusTags: string[];
 }
 
 export interface CareerGuide {
   overview: string;
+  coreCourses: string[];
+  suitableStudents: string[];
   directions: string[];
   roles: string[];
+  industryOutlook: string;
+  graduateDirections: string[];
   skillFocus: string[];
+  riskReminder: string;
   longTermPath: string;
 }
 
@@ -79,6 +108,14 @@ export interface Recommendation {
   category: RecommendationCategory;
   reason: string;
   risk: string;
+  dataMode: DataMode;
+  dataSource: DataSource;
+  dataSources: DataSource[];
+  probabilityExplanation: ProbabilityExplanation;
+  admissionTrend: AdmissionTrend;
+  rankGap: number;
+  riskLevel: RiskLevel;
+  evidence: string[];
   schoolProfile: SchoolProfile;
   careerGuide: CareerGuide;
   alternative: AlternativeSchool;
@@ -570,8 +607,8 @@ function roundProbability(value: number) {
   return Number(value.toFixed(2));
 }
 
-function toSchoolMap() {
-  return new Map(schools.map((school) => [school.id, school]));
+function toSchoolMap(schoolRows: School[] = schools) {
+  return new Map(schoolRows.map((school) => [school.id, school]));
 }
 
 export function calculateBaseProbability({
@@ -654,9 +691,9 @@ function estimateRankFromScore(score: number, subject: SubjectType) {
   return Math.max(500, Math.round(base * Math.exp(-(normalized - 420) / 74)));
 }
 
-function latestStatsForProvince(province: string) {
+function latestStatsForProvince(province: string, stats: AdmissionStat[] = admissionStats) {
   const latestBySchool = new Map<number, AdmissionStat>();
-  for (const stat of admissionStats) {
+  for (const stat of stats) {
     if (stat.province !== province) continue;
     const previous = latestBySchool.get(stat.schoolId);
     if (!previous || previous.year < stat.year) {
@@ -666,8 +703,8 @@ function latestStatsForProvince(province: string) {
   return [...latestBySchool.values()];
 }
 
-function trendDeltaFor(stat: AdmissionStat) {
-  const rows = admissionStats
+function trendDeltaFor(stat: AdmissionStat, stats: AdmissionStat[] = admissionStats) {
+  const rows = stats
     .filter(
       (row) =>
         row.schoolId === stat.schoolId &&
@@ -722,14 +759,26 @@ function reasonText({
 function getSchoolProfile(school: School, stat: AdmissionStat, category: RecommendationCategory, probability: number): SchoolProfile {
   const strengths = typeStrengths[school.type] ?? ["专业基础稳定", "区域就业连接明确", "培养路径清晰"];
   const categoryText = category === "reach" ? "冲刺" : category === "match" ? "稳妥" : "保底";
+  const featuredMajors = school.featuredMajors ?? [stat.major, "通识培养", "交叉学科"];
+  const advantagedDisciplines = school.advantagedDisciplines ?? strengths.slice(0, 4);
+  const suitableFor = school.suitableFor ?? ["希望按位次做梯度决策", "需要兼顾学校层次与专业方向"];
   return {
     summary: `${school.name} 位于${school.city}，属于${school.type}院校。本次推荐把它放入${categoryText}梯度，适合作为志愿组合中的${categoryText}节点。`,
+    level: school.level ?? school.type,
+    location: `${school.province} · ${school.city}`,
+    ownership: school.ownership ?? "以官方招生章程为准",
+    educationType: school.educationType ?? "普通本科",
     strengths: [...strengths, `${school.city} 城市资源`, `${stat.major} 专业方向`].slice(0, 5),
+    featuredMajors,
+    advantagedDisciplines,
+    suitableFor,
     admissionInsight: `近年 ${stat.major} 平均录取位次约 ${stat.avgRank.toLocaleString(
       "zh-CN"
     )}，最低位次样本约 ${stat.minRank.toLocaleString("zh-CN")}；当前模型概率为 ${Math.round(
       probability * 100
     )}%，需要结合当年计划数、选科要求和专业组变化复核。`,
+    campusAndEmployment:
+      school.campusAndEmployment ?? `${school.city} 的区域产业、升学资源和实习机会会影响该校毕业去向，需要结合学校就业质量报告复核。`,
     campusTags: [school.province, school.city, school.type, stat.major]
   };
 }
@@ -743,14 +792,172 @@ function getCareerGuide(major: string): CareerGuide {
       skillFocus: ["专业基础", "数据分析", "沟通表达", "实习实践", "证书与作品积累"],
       longTermPath: "可依据个人兴趣向专业专家、项目管理、行业研究、公共服务或复合型管理岗位发展。"
     };
+  const expansion = careerExpansionFor(major);
 
   return {
     overview: profile.overview(major),
+    coreCourses: expansion.coreCourses,
+    suitableStudents: expansion.suitableStudents,
     directions: profile.directions,
     roles: profile.roles,
+    industryOutlook: expansion.industryOutlook,
+    graduateDirections: expansion.graduateDirections,
     skillFocus: profile.skillFocus,
+    riskReminder: expansion.riskReminder,
     longTermPath: profile.longTermPath
   };
+}
+
+function careerExpansionFor(major: string) {
+  if (["计算机", "软件", "人工智能", "数据科学", "网络", "信息安全"].some((keyword) => major.includes(keyword))) {
+    return {
+      coreCourses: ["程序设计", "数据结构", "算法分析", "计算机系统", "数据库", "机器学习基础"],
+      suitableStudents: ["数学与逻辑基础较好", "愿意持续学习新技术", "能接受高强度项目实践"],
+      industryOutlook: "数字化、人工智能和产业软件长期需求仍强，但岗位会更看重工程能力、实习经历和复合背景。",
+      graduateDirections: ["计算机科学与技术", "软件工程", "人工智能", "网络空间安全", "电子信息专硕"],
+      riskReminder: "热门方向竞争激烈，普通课程成绩不足以形成优势，需要通过项目、竞赛、实习或科研证明能力。"
+    };
+  }
+  if (["电子", "通信", "自动化", "电气", "微电子", "机器人工程"].some((keyword) => major.includes(keyword))) {
+    return {
+      coreCourses: ["电路分析", "模拟电子技术", "数字电子技术", "信号与系统", "控制理论", "嵌入式系统"],
+      suitableStudents: ["物理和数学基础扎实", "喜欢硬件与系统调试", "能接受实验和工程验证"],
+      industryOutlook: "半导体、通信设备、智能制造和新能源相关岗位需求稳定，区域产业链会显著影响实习与就业机会。",
+      graduateDirections: ["电子科学与技术", "信息与通信工程", "控制科学与工程", "电气工程", "集成电路工程"],
+      riskReminder: "学习曲线较陡，低年级基础课和实验能力会影响后续方向选择。"
+    };
+  }
+  if (["临床医学", "口腔医学", "药学", "护理", "医学"].some((keyword) => major.includes(keyword))) {
+    return {
+      coreCourses: ["人体解剖学", "生理学", "病理学", "药理学", "诊断学", "临床技能训练"],
+      suitableStudents: ["愿意长期学习和考试", "沟通稳定性强", "能接受规培和执业资格路径"],
+      industryOutlook: "医疗健康需求长期稳定，但培养周期长、资格要求高，城市和医院平台差异明显。",
+      graduateDirections: ["临床医学", "口腔医学", "公共卫生", "药学", "基础医学"],
+      riskReminder: "周期长、压力大，需关注学制、规培、执业资格和专业调剂风险。"
+    };
+  }
+  if (["金融", "经济", "财政", "会计", "财务", "审计"].some((keyword) => major.includes(keyword))) {
+    return {
+      coreCourses: ["微观经济学", "宏观经济学", "会计学", "公司金融", "计量经济学", "统计分析"],
+      suitableStudents: ["对商业和数据敏感", "表达与研究写作能力较强", "愿意积累实习和证书"],
+      industryOutlook: "金融与经营分析岗位仍有需求，但更看重学校平台、实习质量、数据能力和行业理解。",
+      graduateDirections: ["应用经济学", "金融专硕", "会计专硕", "统计学", "工商管理"],
+      riskReminder: "热门岗位集中在头部城市和头部机构，需要尽早规划实习、证书和量化工具能力。"
+    };
+  }
+  if (["法学", "知识产权", "社会学", "行政管理"].some((keyword) => major.includes(keyword))) {
+    return {
+      coreCourses: ["法理学", "宪法学", "民法", "刑法", "行政法", "法律文书写作"],
+      suitableStudents: ["阅读和表达能力强", "逻辑严谨", "能接受资格考试和长期案例积累"],
+      industryOutlook: "法律、合规和公共治理需求稳定，专业资格、学校平台和实习经历对职业入口影响大。",
+      graduateDirections: ["法学", "法律硕士", "知识产权", "公共管理", "社会治理"],
+      riskReminder: "法考、考研和公务员等路径竞争都很强，需要提前设计备选路线。"
+    };
+  }
+  return {
+    coreCourses: ["专业导论", "学科基础课", "研究方法", "数据分析", "实践实训", "毕业设计"],
+    suitableStudents: ["愿意探索交叉方向", "重视实习与作品积累", "希望通过深造或证书增强竞争力"],
+    industryOutlook: "就业质量取决于学校平台、城市产业、个人能力和实习质量，需要结合真实就业质量报告判断。",
+    graduateDirections: ["本专业继续深造", "交叉学科", "教育方向", "管理方向", "专业硕士"],
+    riskReminder: "不同学校培养重点差异较大，需要复核课程设置、转专业政策和毕业去向。"
+  };
+}
+
+function sourceFor(school: School, stat: AdmissionStat): DataSource {
+  return (
+    stat.dataSource ??
+    school.dataSources?.[0] ?? {
+      id: "sample-legacy",
+      sourceType: "sample",
+      sourceName: "示例数据源：本地历史样例",
+      sourceUrl: "https://gaokao.chsi.com.cn/",
+      year: stat.year,
+      province: stat.province,
+      updatedAt: "2026-06-23T00:00:00.000Z",
+      verifiedAt: "2026-06-23T00:00:00.000Z",
+      confidence: 0.2,
+      notes: "旧版本地样例数据，仅用于演示推荐流程。"
+    }
+  );
+}
+
+function dataModeFor(school: School, stat: AdmissionStat): DataMode {
+  return stat.dataMode ?? school.dataMode ?? "sample";
+}
+
+function riskLevelFor(category: RecommendationCategory, probability: number): RiskLevel {
+  if (category === "reach" || probability < 0.45) return "high";
+  if (category === "match" || probability < 0.74) return "medium";
+  return "low";
+}
+
+function probabilityExplanationFor(result: ProbabilityResult): ProbabilityExplanation {
+  return {
+    formula: "gap = student_rank - school_avg_rank; z = gap / school_std; probability = 1 / (1 + exp(-k * z))",
+    gap: Math.round(result.gap),
+    z: Number(result.z.toFixed(3)),
+    factors: {
+      ...result.factors,
+      final: result.probability
+    },
+    narrative: `基础 sigmoid 概率为 ${Math.round(result.factors.base * 100)}%，叠加专业热度、地区竞争、城市偏好、年份趋势和风险偏好后，最终概率为 ${Math.round(
+      result.probability * 100
+    )}%。`
+  };
+}
+
+function admissionTrendFor(stat: AdmissionStat, stats: AdmissionStat[]): AdmissionTrend {
+  const rows = stats
+    .filter((row) => row.schoolId === stat.schoolId && row.province === stat.province && row.major === stat.major)
+    .sort((a, b) => a.year - b.year);
+  const yearlyAvgRanks = rows.map((row) => ({
+    year: row.year,
+    avgRank: row.avgRank,
+    minRank: row.minRank
+  }));
+  const first = rows[0] ?? stat;
+  const latest = rows[rows.length - 1] ?? stat;
+  const delta = latest.avgRank - first.avgRank;
+  const direction = Math.abs(delta) < stat.stdRank * 0.18 ? "stable" : delta < 0 ? "rising" : "declining";
+  const values = rows.map((row) => row.avgRank);
+  const mean = values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(values.length, 1);
+  const coefficient = Math.sqrt(variance) / Math.max(mean, 1);
+  const volatility = coefficient > 0.18 ? "high" : coefficient > 0.08 ? "medium" : "low";
+  const directionText = direction === "rising" ? "录取位次趋紧" : direction === "declining" ? "录取位次有所放宽" : "录取位次基本稳定";
+
+  return {
+    latestYear: latest.year,
+    yearlyAvgRanks,
+    direction,
+    volatility,
+    summary: `${latest.year} 年平均位次 ${latest.avgRank.toLocaleString("zh-CN")}；近三年趋势显示${directionText}，波动水平为 ${volatility}。`
+  };
+}
+
+function evidenceFor({
+  school,
+  stat,
+  probability,
+  dataMode,
+  source,
+  trend
+}: {
+  school: School;
+  stat: AdmissionStat;
+  probability: number;
+  dataMode: DataMode;
+  source: DataSource;
+  trend: AdmissionTrend;
+}) {
+  return [
+    `${source.sourceName}（${source.year}，${source.sourceType}，可信度 ${Math.round(source.confidence * 100)}%）`,
+    `${school.name} · ${stat.major} 最新平均位次 ${stat.avgRank.toLocaleString("zh-CN")}，最低位次样本 ${stat.minRank.toLocaleString("zh-CN")}`,
+    `数据模式：${dataMode === "verified" ? "真实核验" : dataMode === "partial" ? "部分真实" : "示例结构"}；模型概率 ${Math.round(
+      probability * 100
+    )}%`,
+    trend.summary
+  ];
 }
 
 function withAlternative(item: Omit<Recommendation, "alternative">, pool: Omit<Recommendation, "alternative">[]) {
@@ -789,8 +996,10 @@ function selectGroup(items: Omit<Recommendation, "alternative">[], category: Rec
 export function getRecommendations(input: RecommendInput): RecommendResponse {
   const preferredCities = input.preferredCities ?? [];
   const studentRank = input.rank ?? estimateRankFromScore(input.score ?? 600, input.subject);
-  const schoolMap = toSchoolMap();
-  const latestStats = latestStatsForProvince(input.province);
+  const dataset = getAdmissionDataset();
+  const schoolMap = toSchoolMap(dataset.schools);
+  const stats = dataset.stats;
+  const latestStats = latestStatsForProvince(input.province, stats);
 
   const candidates = latestStats
     .map((stat) => {
@@ -805,9 +1014,22 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
         riskPreference: input.riskPreference,
         stat,
         school,
-        trendDelta: trendDeltaFor(stat)
+        trendDelta: trendDeltaFor(stat, stats)
       });
       const category = categoryFor(probabilityResult.probability);
+      const primarySource = sourceFor(school, stat);
+      const dataMode = dataModeFor(school, stat);
+      const admissionTrend = admissionTrendFor(stat, stats);
+      const probabilityExplanation = probabilityExplanationFor(probabilityResult);
+      const riskLevel = riskLevelFor(category, probabilityResult.probability);
+      const evidence = evidenceFor({
+        school,
+        stat,
+        probability: probabilityResult.probability,
+        dataMode,
+        source: primarySource,
+        trend: admissionTrend
+      });
 
       return {
         schoolId: school.id,
@@ -826,6 +1048,16 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
           majors: input.majors
         }),
         risk: riskText(category, probabilityResult.probability, stat),
+        dataMode,
+        dataSource: primarySource,
+        dataSources: [primarySource, ...(school.dataSources ?? [])].filter(
+          (source, index, all) => all.findIndex((item) => item.id === source.id) === index
+        ),
+        probabilityExplanation,
+        admissionTrend,
+        rankGap: Math.round(probabilityResult.gap),
+        riskLevel,
+        evidence,
         schoolProfile: getSchoolProfile(school, stat, category, probabilityResult.probability),
         careerGuide: getCareerGuide(stat.major)
       };

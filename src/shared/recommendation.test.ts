@@ -7,6 +7,7 @@ import {
   majorOptions,
   provinceOptions
 } from "./recommendation";
+import { getAdmissionDataset, getDataCoverage, importAdmissionData } from "./real-data-store";
 
 describe("gaokao recommendation model", () => {
   it("uses rank gap and sigmoid so a stronger student rank gives a higher base probability", () => {
@@ -160,5 +161,60 @@ describe("gaokao recommendation model", () => {
     expect(first.careerGuide.directions.length).toBeGreaterThanOrEqual(4);
     expect(first.careerGuide.roles.length).toBeGreaterThanOrEqual(5);
     expect(first.careerGuide.longTermPath).toBeTruthy();
+  });
+
+  it("explains every recommendation with provenance, probability factors, trend, and evidence", () => {
+    const result = getRecommendations({
+      score: 642,
+      rank: 2600,
+      province: "北京",
+      subject: "physics",
+      cityPreference: 0.72,
+      preferredCities: ["北京", "上海", "杭州", "南京"],
+      majors: ["计算机科学与技术", "人工智能", "电子信息工程"],
+      riskPreference: "balanced"
+    });
+
+    const first = result.match[0];
+    expect(first.dataMode).toBe("sample");
+    expect(first.dataSource.sourceUrl).toContain("gaokao.chsi.com.cn");
+    expect(first.dataSources.length).toBeGreaterThanOrEqual(1);
+    expect(first.probabilityExplanation.formula).toContain("1 / (1 + exp");
+    expect(first.probabilityExplanation.factors.base).toEqual(expect.any(Number));
+    expect(first.probabilityExplanation.factors.final).toBe(first.probability);
+    expect(first.admissionTrend.latestYear).toBeGreaterThanOrEqual(2025);
+    expect(first.admissionTrend.yearlyAvgRanks.length).toBeGreaterThanOrEqual(3);
+    expect(first.rankGap).toEqual(expect.any(Number));
+    expect(["high", "medium", "low"]).toContain(first.riskLevel);
+    expect(first.evidence.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("tracks source coverage and never treats sample records as verified", () => {
+    const coverage = getDataCoverage();
+    const dataset = getAdmissionDataset();
+
+    expect(dataset.stats.length).toBeGreaterThan(0);
+    expect(coverage.totalRecords).toBeGreaterThan(0);
+    expect(coverage.byMode.sample).toBeGreaterThan(0);
+    expect(coverage.byMode.verified ?? 0).toBe(0);
+    expect(dataset.stats.every((stat) => stat.dataMode !== "verified")).toBe(true);
+  });
+
+  it("rejects imported admission rows without required source metadata", () => {
+    const result = importAdmissionData([
+      {
+        schoolName: "测试大学",
+        province: "北京",
+        city: "北京",
+        major: "计算机科学与技术",
+        year: 2025,
+        minRank: 1000,
+        avgRank: 1600,
+        stdRank: 500
+      }
+    ]);
+
+    expect(result.accepted).toBe(0);
+    expect(result.errors[0].message).toContain("sourceUrl");
   });
 });
