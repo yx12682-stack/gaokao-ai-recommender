@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: gaokao-ai-recommender
+    runtime: node
+    plan: free
+    buildCommand: npm install --no-audit --no-fund && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
