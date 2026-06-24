@@ -1,5 +1,25 @@
-import type { AdmissionTrend, DataMode, DataSource, ProbabilityExplanation, RiskLevel } from "./data-model";
+import type {
+  AdmissionTrend,
+  CohortDistributionItem,
+  CohortOutcomes,
+  CohortSchoolMajorPair,
+  CoverageState,
+  DataMode,
+  DataSource,
+  MajorCatalogEntry,
+  ProbabilityExplanation,
+  RiskLevel,
+  SchoolMajorOption,
+  SchoolReachability,
+  SourceAwareAdmissionStat,
+  SourceAwareSchool,
+  VolunteerPlanItem
+} from "./data-model";
+import { getMajorCatalogEntry, nationalMajorCatalog } from "./major-catalog";
 import { getAdmissionDataset } from "./real-data-store";
+
+export { getMajorCatalog, getMajorCatalogEntry, nationalMajorCatalog } from "./major-catalog";
+export { getNationalSourceCoverage, getSourceRegistry } from "./source-registry";
 
 export type RiskPreference = "conservative" | "balanced" | "aggressive";
 export type SubjectType = "physics" | "history" | "science" | "arts" | "comprehensive";
@@ -45,6 +65,13 @@ export interface RecommendInput {
   preferredCities?: string[];
   majors: string[];
   riskPreference: RiskPreference;
+}
+
+export interface CohortOutcomesInput {
+  score?: number;
+  rank?: number;
+  province: string;
+  subject: SubjectType;
 }
 
 export interface ProbabilityFactors {
@@ -106,6 +133,9 @@ export interface Recommendation {
   major: string;
   probability: number;
   category: RecommendationCategory;
+  selectionStage: "school_pool";
+  schoolReachability: SchoolReachability;
+  eligibleMajors: SchoolMajorOption[];
   reason: string;
   risk: string;
   dataMode: DataMode;
@@ -125,6 +155,54 @@ export interface RecommendResponse {
   reach: Recommendation[];
   match: Recommendation[];
   safety: Recommendation[];
+  cohortOutcomes: CohortOutcomes;
+}
+
+export interface SchoolFirstSummary {
+  total: number;
+  reach: number;
+  match: number;
+  safety: number;
+  latestYear: number | null;
+  dataMode: DataMode;
+  dataStatus: string;
+}
+
+export interface ReachableSchoolsResponse {
+  items: Recommendation[];
+  summary: SchoolFirstSummary;
+  cohortOutcomes: CohortOutcomes;
+  dataNotice: string;
+}
+
+export interface SchoolDetailResponse {
+  school: SourceAwareSchool;
+  profile: SchoolProfile;
+  admissionStats: SourceAwareAdmissionStat[];
+  dataSources: DataSource[];
+  dataNotice: string;
+}
+
+export interface SchoolMajorsInput extends RecommendInput {
+  schoolId: number;
+}
+
+export interface SchoolMajorsResponse {
+  schoolId: number;
+  schoolName: string;
+  items: SchoolMajorOption[];
+  dataNotice: string;
+}
+
+export interface VolunteerPlanInput extends RecommendInput {
+  selectedSchoolIds?: number[];
+  selectedMajors?: string[];
+}
+
+export interface VolunteerPlanResponse {
+  items: VolunteerPlanItem[];
+  summary: SchoolFirstSummary;
+  dataNotice: string;
 }
 
 const K = -1.35;
@@ -208,132 +286,7 @@ export const cityOptions = [
   "珠海"
 ];
 
-export const majorOptions = [
-  "哲学",
-  "经济学",
-  "财政学",
-  "金融学",
-  "金融工程",
-  "保险学",
-  "国际经济与贸易",
-  "法学",
-  "知识产权",
-  "社会学",
-  "社会工作",
-  "思想政治教育",
-  "教育学",
-  "学前教育",
-  "小学教育",
-  "体育教育",
-  "汉语言文学",
-  "汉语国际教育",
-  "英语",
-  "日语",
-  "新闻学",
-  "广告学",
-  "网络与新媒体",
-  "历史学",
-  "数学与应用数学",
-  "信息与计算科学",
-  "物理学",
-  "应用物理学",
-  "化学",
-  "应用化学",
-  "地理科学",
-  "地理信息科学",
-  "生物科学",
-  "生物技术",
-  "心理学",
-  "应用心理学",
-  "统计学",
-  "应用统计学",
-  "工程力学",
-  "机械工程",
-  "机械设计制造及其自动化",
-  "材料成型及控制工程",
-  "工业设计",
-  "车辆工程",
-  "智能制造工程",
-  "测控技术与仪器",
-  "材料科学与工程",
-  "高分子材料与工程",
-  "新能源材料与器件",
-  "能源与动力工程",
-  "新能源科学与工程",
-  "电气工程及其自动化",
-  "电子信息工程",
-  "电子科学与技术",
-  "通信工程",
-  "微电子科学与工程",
-  "光电信息科学与工程",
-  "人工智能",
-  "自动化",
-  "机器人工程",
-  "计算机科学与技术",
-  "软件工程",
-  "网络工程",
-  "信息安全",
-  "物联网工程",
-  "数字媒体技术",
-  "数据科学与大数据技术",
-  "网络空间安全",
-  "土木工程",
-  "建筑环境与能源应用工程",
-  "给排水科学与工程",
-  "水利水电工程",
-  "测绘工程",
-  "遥感科学与技术",
-  "化学工程与工艺",
-  "制药工程",
-  "地质工程",
-  "交通运输",
-  "交通工程",
-  "船舶与海洋工程",
-  "航空航天工程",
-  "飞行器设计与工程",
-  "环境工程",
-  "环境科学",
-  "生物医学工程",
-  "食品科学与工程",
-  "建筑学",
-  "城乡规划",
-  "风景园林",
-  "安全工程",
-  "生物工程",
-  "农学",
-  "园艺",
-  "植物保护",
-  "动物科学",
-  "动物医学",
-  "林学",
-  "临床医学",
-  "麻醉学",
-  "医学影像学",
-  "口腔医学",
-  "预防医学",
-  "药学",
-  "中医学",
-  "护理学",
-  "信息管理与信息系统",
-  "工程管理",
-  "工商管理",
-  "市场营销",
-  "会计学",
-  "财务管理",
-  "人力资源管理",
-  "审计学",
-  "公共事业管理",
-  "行政管理",
-  "物流管理",
-  "电子商务",
-  "旅游管理",
-  "音乐学",
-  "美术学",
-  "视觉传达设计",
-  "环境设计",
-  "产品设计",
-  "数字媒体艺术"
-];
+export const majorOptions = nationalMajorCatalog.map((major) => major.name);
 
 export const schools: School[] = [
   { id: 1, name: "清华大学", province: "北京", type: "985 / 双一流", city: "北京" },
@@ -691,16 +644,52 @@ function estimateRankFromScore(score: number, subject: SubjectType) {
   return Math.max(500, Math.round(base * Math.exp(-(normalized - 420) / 74)));
 }
 
-function latestStatsForProvince(province: string, stats: AdmissionStat[] = admissionStats) {
+function latestStatsForProvince(
+  province: string,
+  stats: AdmissionStat[] = admissionStats,
+  subject?: SubjectType,
+  selectedMajors: string[] = []
+) {
   const latestBySchool = new Map<number, AdmissionStat>();
+  const selectedMajorSet = new Set(selectedMajors);
   for (const stat of stats) {
     if (stat.province !== province) continue;
+    if (subject && !subjectMatchesRequirement(subject, stat.subjectRequirement)) continue;
     const previous = latestBySchool.get(stat.schoolId);
-    if (!previous || previous.year < stat.year) {
+    if (!previous || shouldReplaceSchoolRepresentative(stat, previous, selectedMajorSet)) {
       latestBySchool.set(stat.schoolId, stat);
     }
   }
   return [...latestBySchool.values()];
+}
+
+function shouldReplaceSchoolRepresentative(next: AdmissionStat, previous: AdmissionStat, selectedMajors: Set<string>) {
+  if (previous.year !== next.year) return previous.year < next.year;
+  const nextSelected = selectedMajors.has(next.major);
+  const previousSelected = selectedMajors.has(previous.major);
+  if (nextSelected !== previousSelected) return nextSelected;
+  return next.avgRank > previous.avgRank;
+}
+
+function latestStatsForSchoolInProvince({
+  schoolId,
+  province,
+  stats,
+  subject
+}: {
+  schoolId: number;
+  province: string;
+  stats: AdmissionStat[];
+  subject: SubjectType;
+}) {
+  const eligibleRows = stats.filter(
+    (stat) => stat.schoolId === schoolId && stat.province === province && subjectMatchesRequirement(subject, stat.subjectRequirement)
+  );
+  const latestYear = eligibleRows.reduce<number | null>(
+    (current, stat) => (current === null ? stat.year : Math.max(current, stat.year)),
+    null
+  );
+  return latestYear === null ? [] : eligibleRows.filter((stat) => stat.year === latestYear);
 }
 
 function trendDeltaFor(stat: AdmissionStat, stats: AdmissionStat[] = admissionStats) {
@@ -960,6 +949,167 @@ function evidenceFor({
   ];
 }
 
+function uniqueMajorNames(names: Array<string | undefined>) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const name of names) {
+    const normalized = name?.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+
+  return unique;
+}
+
+function heatLevelFor(majorName: string): SchoolMajorOption["heatLevel"] {
+  const heatPenalty = majorHeatPenalty[majorName] ?? -0.018;
+  if (heatPenalty <= -0.045) return "high";
+  if (heatPenalty <= -0.025) return "medium";
+  return "low";
+}
+
+function careerSummaryFor(majorName: string) {
+  const catalogEntry = getMajorCatalogEntry(majorName);
+  if (catalogEntry) {
+    const directions = catalogEntry.employmentDirections.slice(0, 2).join("、");
+    const careers = catalogEntry.representativeCareers.slice(0, 3).join("、");
+    return `${directions}；代表岗位包括${careers}。${catalogEntry.industryOutlook}`;
+  }
+
+  const guide = getCareerGuide(majorName);
+  return `${guide.directions.slice(0, 2).join("、")}；代表岗位包括${guide.roles.slice(0, 3).join("、")}。${guide.industryOutlook}`;
+}
+
+function candidateMajorNamesFor(school: School, stat: AdmissionStat, selectedMajors: string[], schoolMajorStats: AdmissionStat[] = []) {
+  const preferredNames = uniqueMajorNames([
+    stat.major,
+    ...schoolMajorStats.map((item) => item.major),
+    ...(school.featuredMajors ?? []),
+    ...selectedMajors
+  ]);
+  const preferredEntries = preferredNames.flatMap((name) => {
+    const entry = getMajorCatalogEntry(name);
+    return entry ? [entry] : [];
+  });
+  const catalogPreferredNames = preferredEntries.map((entry) => entry.name);
+  const relatedNames = preferredEntries.flatMap((entry) => entry.relatedMajors);
+  const preferredMajorClasses = new Set(preferredEntries.map((entry) => entry.majorClass));
+  const sameClassNames = nationalMajorCatalog
+    .filter((entry) => preferredMajorClasses.has(entry.majorClass))
+    .map((entry) => entry.name);
+
+  return uniqueMajorNames([
+    ...catalogPreferredNames,
+    ...relatedNames,
+    ...sameClassNames,
+    "计算机科学与技术",
+    "电子信息工程",
+    "软件工程",
+    "人工智能",
+    "自动化",
+    "通信工程"
+  ]).slice(0, 5);
+}
+
+function majorOptionReason({
+  majorName,
+  school,
+  stat,
+  selectedMajors
+}: {
+  majorName: string;
+  school: School;
+  stat: AdmissionStat;
+  selectedMajors: string[];
+}) {
+  if (majorName === stat.major) {
+    return `该方向有 ${stat.year} 年 ${school.name} 录取位次样本，可作为校内专业选择的首个参照。`;
+  }
+  if (school.featuredMajors?.includes(majorName)) {
+    return `${majorName} 来自 ${school.name} 的特色专业线索，适合作为同校备选方向继续核验。`;
+  }
+  if (selectedMajors.includes(majorName)) {
+    return `该方向来自考生专业偏好，放入 ${school.name} 的校内备选池用于和录取位次一起比较。`;
+  }
+  return `${majorName} 与该校优势方向或国家专业目录相近，可补足同一学校下的专业选择宽度。`;
+}
+
+function buildEligibleMajors({
+  school,
+  stat,
+  selectedMajors,
+  probability,
+  rankGap,
+  source,
+  dataMode,
+  schoolMajorStats,
+  studentRank
+}: {
+  school: School;
+  stat: AdmissionStat;
+  selectedMajors: string[];
+  probability: number;
+  rankGap: number;
+  source: DataSource;
+  dataMode: DataMode;
+  schoolMajorStats?: AdmissionStat[];
+  studentRank: number;
+}): SchoolMajorOption[] {
+  const selectedMajorSet = new Set(selectedMajors);
+  const statHeatPenalty = majorHeatPenalty[stat.major] ?? -0.018;
+  const sameSchoolMajorStats = schoolMajorStats ?? [];
+  const majorStatsByName = new Map(sameSchoolMajorStats.map((item) => [item.major, item]));
+
+  return candidateMajorNamesFor(school, stat, selectedMajors, sameSchoolMajorStats).map((majorName, index) => {
+    const majorStat = majorStatsByName.get(majorName);
+    const catalogEntry = getMajorCatalogEntry(majorName);
+    const guide = getCareerGuide(majorName);
+    const optionHeatPenalty = majorHeatPenalty[majorName] ?? -0.018;
+    const heatAdjustment = optionHeatPenalty - statHeatPenalty;
+    const preferenceAdjustment = selectedMajorSet.has(majorName) ? 0.012 : 0;
+    const positionAdjustment = majorName === stat.major ? 0 : -Math.min(index * 0.006, 0.03);
+    const majorStatProbability =
+      majorStat && majorStat.major !== stat.major
+        ? roundProbability(
+            clamp(
+              calculateBaseProbability({
+                studentRank,
+                schoolAvgRank: majorStat.avgRank,
+                schoolStdRank: majorStat.stdRank
+              }) +
+                heatAdjustment +
+                preferenceAdjustment,
+              0.03,
+              0.96
+            )
+          )
+        : null;
+    const fitProbability =
+      majorName === stat.major
+        ? probability
+        : majorStatProbability ?? roundProbability(clamp(probability + heatAdjustment + preferenceAdjustment + positionAdjustment, 0.03, 0.96));
+    const optionStat = majorStat ?? stat;
+    const optionSource = sourceFor(school, optionStat);
+    const optionDataMode = dataModeFor(school, optionStat);
+    const optionRankGap = majorStat ? studentRank - majorStat.avgRank : rankGap - (fitProbability - probability) * Math.max(stat.stdRank, 1);
+
+    return {
+      majorName,
+      plainLanguage: catalogEntry?.plainLanguage ?? guide.overview,
+      fitProbability,
+      heatLevel: heatLevelFor(majorName),
+      dataMode: optionDataMode ?? dataMode,
+      source: majorStat ? optionSource : majorName === stat.major ? source : catalogEntry?.dataSource ?? source,
+      rankGap: Math.round(optionRankGap),
+      reason: majorOptionReason({ majorName, school, stat, selectedMajors }),
+      risk: catalogEntry?.riskReminder ?? guide.riskReminder,
+      careerSummary: careerSummaryFor(majorName)
+    };
+  });
+}
+
 function withAlternative(item: Omit<Recommendation, "alternative">, pool: Omit<Recommendation, "alternative">[]) {
   const safer = pool
     .filter((candidate) => candidate.schoolId !== item.schoolId && candidate.probability >= item.probability)
@@ -982,29 +1132,304 @@ function withAlternative(item: Omit<Recommendation, "alternative">, pool: Omit<R
   };
 }
 
-function selectGroup(items: Omit<Recommendation, "alternative">[], category: RecommendationCategory, count: number) {
-  const categoryItems = items.filter((item) => item.category === category);
+function sortForCategory<T extends { probability: number }>(items: T[], category: RecommendationCategory) {
   if (category === "reach") {
-    return categoryItems.sort((a, b) => b.probability - a.probability).slice(0, count);
+    return [...items].sort((a, b) => b.probability - a.probability);
   }
   if (category === "match") {
-    return categoryItems.sort((a, b) => Math.abs(a.probability - 0.58) - Math.abs(b.probability - 0.58)).slice(0, count);
+    return [...items].sort((a, b) => Math.abs(a.probability - 0.58) - Math.abs(b.probability - 0.58));
   }
-  return categoryItems.sort((a, b) => b.probability - a.probability).slice(0, count);
+  return [...items].sort((a, b) => b.probability - a.probability);
 }
 
-export function getRecommendations(input: RecommendInput): RecommendResponse {
+function selectGroup(items: Omit<Recommendation, "alternative">[], category: RecommendationCategory, count: number) {
+  return sortForCategory(
+    items.filter((item) => item.category === category),
+    category
+  ).slice(0, count);
+}
+
+type CohortRow = {
+  stat: SourceAwareAdmissionStat;
+  school: School;
+};
+
+function rankBandFor(rankCenter: number) {
+  const radius = Math.max(500, Math.round(rankCenter * 0.16));
+  return {
+    from: Math.max(1, rankCenter - radius),
+    to: rankCenter + radius
+  };
+}
+
+function subjectMatchesRequirement(subject: SubjectType, requirement?: string) {
+  if (!requirement || requirement.includes("不限")) return true;
+
+  const subjectKeywords: Record<SubjectType, string[]> = {
+    physics: ["物理", "理科"],
+    history: ["历史", "文科"],
+    science: ["理科", "物理"],
+    arts: ["文科", "历史"],
+    comprehensive: ["综合", "不限"]
+  };
+
+  return subjectKeywords[subject].some((keyword) => requirement.includes(keyword));
+}
+
+function summarizeDataMode(rows: CohortRow[]): DataMode {
+  if (rows.length === 0) return "unavailable";
+
+  const modes = new Set(rows.map(({ school, stat }) => dataModeFor(school, stat)));
+  if (modes.size === 1) return [...modes][0];
+  return "partial";
+}
+
+function coverageStateFor(dataMode: DataMode): CoverageState {
+  if (dataMode === "verified") return "verified";
+  if (dataMode === "sample") return "sample";
+  if (dataMode === "unavailable") return "missing";
+  return "partial";
+}
+
+function dataModeLabel(dataMode: DataMode) {
+  if (dataMode === "verified") return "真实核验数据";
+  if (dataMode === "partial") return "部分真实数据";
+  if (dataMode === "sample") return "样例数据";
+  return "暂无可用数据";
+}
+
+function dataStatusText(dataMode: DataMode) {
+  if (dataMode === "verified") {
+    return "当前结果已优先使用导入并核验的真实录取数据，仍需在填报前复核当年招生章程、专业组和计划数。";
+  }
+  if (dataMode === "partial") {
+    return "当前结果混合了部分真实数据和样例结构，未覆盖的省份、学校或专业仍需继续接入权威来源。";
+  }
+  if (dataMode === "sample") {
+    return "当前结果主要基于样例数据结构，用于产品流程演示，不应直接作为正式志愿填报依据。";
+  }
+  return "当前没有足够录取数据支撑结论，仅能展示学校与专业目录层面的基础信息。";
+}
+
+function buildDataNotice(dataMode: DataMode, extra?: string) {
+  const prefix = `当前数据状态：${dataModeLabel(dataMode)}。${dataStatusText(dataMode)}`;
+  const authorityNotice =
+    "正式产品需持续接入并核验各省考试院、学校招生网、阳光高考等权威数据，覆盖录取分/位次、专业组、选科要求、计划数和招生章程。";
+  return [prefix, extra, authorityNotice].filter(Boolean).join(" ");
+}
+
+function summarizeDataModeFromModes(modes: DataMode[]): DataMode {
+  if (modes.length === 0) return "unavailable";
+  const uniqueModes = new Set(modes);
+  if (uniqueModes.size === 1) return modes[0];
+  if (uniqueModes.has("verified") || uniqueModes.has("partial")) return "partial";
+  if (uniqueModes.has("sample")) return "sample";
+  return "unavailable";
+}
+
+function summaryForRecommendations(items: Recommendation[]): SchoolFirstSummary {
+  const latestYear = items.length === 0 ? null : Math.max(...items.map((item) => item.admissionTrend.latestYear));
+  const dataMode = summarizeDataModeFromModes(items.map((item) => item.dataMode));
+
+  return {
+    total: items.length,
+    reach: items.filter((item) => item.category === "reach").length,
+    match: items.filter((item) => item.category === "match").length,
+    safety: items.filter((item) => item.category === "safety").length,
+    latestYear,
+    dataMode,
+    dataStatus: dataStatusText(dataMode)
+  };
+}
+
+function uniqueSources(sources: Array<DataSource | undefined>) {
+  const byId = new Map<string, DataSource>();
+  for (const source of sources) {
+    if (source) byId.set(source.id, source);
+  }
+  return [...byId.values()];
+}
+
+function latestStatForSchool({
+  schoolId,
+  province,
+  stats
+}: {
+  schoolId: number;
+  province?: string;
+  stats: SourceAwareAdmissionStat[];
+}) {
+  const schoolStats = stats.filter((stat) => stat.schoolId === schoolId);
+  const provinceStats = province ? schoolStats.filter((stat) => stat.province === province) : [];
+  const candidates = provinceStats.length > 0 ? provinceStats : schoolStats;
+
+  return candidates.sort((left, right) => {
+    if (right.year !== left.year) return right.year - left.year;
+    return left.avgRank - right.avgRank;
+  })[0];
+}
+
+function fallbackProfileForSchool(school: SourceAwareSchool): SchoolProfile {
+  const strengths = school.advantagedDisciplines.length > 0 ? school.advantagedDisciplines : ["专业建设", "区域就业", "升学发展"];
+
+  return {
+    summary: `${school.name} 位于${school.city}，属于${school.type}院校。当前缺少足够录取统计，需结合官方来源继续核验。`,
+    level: school.level,
+    location: `${school.province} · ${school.city}`,
+    ownership: school.ownership,
+    educationType: school.educationType,
+    strengths: strengths.slice(0, 5),
+    featuredMajors: school.featuredMajors,
+    advantagedDisciplines: school.advantagedDisciplines,
+    suitableFor: school.suitableFor,
+    admissionInsight: "当前没有足够录取统计支撑概率判断，请优先补充省级考试院与学校招生网公开数据。",
+    campusAndEmployment: school.campusAndEmployment,
+    campusTags: [school.province, school.city, school.type]
+  };
+}
+
+function roundedShare(count: number, total: number) {
+  return total === 0 ? 0 : Number((count / total).toFixed(3));
+}
+
+function compareCohortCounts(
+  left: { name?: string; schoolName?: string; majorName?: string; count: number; latestYear?: number },
+  right: { name?: string; schoolName?: string; majorName?: string; count: number; latestYear?: number }
+) {
+  if (right.count !== left.count) return right.count - left.count;
+  if ((right.latestYear ?? 0) !== (left.latestYear ?? 0)) return (right.latestYear ?? 0) - (left.latestYear ?? 0);
+  return (left.name ?? `${left.schoolName}-${left.majorName}`).localeCompare(
+    right.name ?? `${right.schoolName}-${right.majorName}`,
+    "zh-CN"
+  );
+}
+
+function buildDistribution(rows: CohortRow[], nameFor: (row: CohortRow) => string): CohortDistributionItem[] {
+  const groups = new Map<string, CohortRow[]>();
+
+  for (const row of rows) {
+    const name = nameFor(row);
+    groups.set(name, [...(groups.get(name) ?? []), row]);
+  }
+
+  return [...groups.entries()]
+    .map(([name, groupRows]) => ({
+      name,
+      count: groupRows.length,
+      share: roundedShare(groupRows.length, rows.length),
+      dataMode: summarizeDataMode(groupRows)
+    }))
+    .sort(compareCohortCounts)
+    .slice(0, 8);
+}
+
+function buildSchoolMajorPairs(rows: CohortRow[]): CohortSchoolMajorPair[] {
+  const groups = new Map<string, CohortRow[]>();
+
+  for (const row of rows) {
+    const key = `${row.school.name}\u0000${row.stat.major}\u0000${row.school.city}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+
+  return [...groups.values()]
+    .map((groupRows) => {
+      const first = groupRows[0];
+      return {
+        schoolName: first.school.name,
+        majorName: first.stat.major,
+        city: first.school.city,
+        count: groupRows.length,
+        share: roundedShare(groupRows.length, rows.length),
+        latestYear: Math.max(...groupRows.map(({ stat }) => stat.year)),
+        dataMode: summarizeDataMode(groupRows)
+      };
+    })
+    .sort(compareCohortCounts)
+    .slice(0, 10);
+}
+
+export function getCohortOutcomes(input: CohortOutcomesInput): CohortOutcomes {
+  const rankCenter = input.rank ?? estimateRankFromScore(input.score ?? 600, input.subject);
+  const rankBand = rankBandFor(rankCenter);
+  const dataset = getAdmissionDataset();
+  const schoolMap = toSchoolMap(dataset.schools);
+  let missingReason: string | undefined;
+
+  let provinceStats = dataset.stats.filter(
+    (stat) => stat.province === input.province && subjectMatchesRequirement(input.subject, stat.subjectRequirement)
+  );
+
+  if (provinceStats.length === 0 && input.province !== "全国") {
+    provinceStats = dataset.stats.filter(
+      (stat) => stat.province === "全国" && subjectMatchesRequirement(input.subject, stat.subjectRequirement)
+    );
+    missingReason = `${input.province} 当前没有可用聚合录取样本，已使用全国样本补足。`;
+  }
+
+  if (provinceStats.length === 0) {
+    provinceStats = dataset.stats.filter((stat) => subjectMatchesRequirement(input.subject, stat.subjectRequirement));
+    missingReason = "当前省份没有可用聚合录取样本，已使用全部样本中的最近位次记录补足。";
+  }
+
+  const rows = provinceStats
+    .map((stat) => {
+      const school = schoolMap.get(stat.schoolId);
+      if (!school) return null;
+      return { stat, school };
+    })
+    .filter((row): row is CohortRow => Boolean(row));
+
+  let selectedRows = rows.filter(({ stat }) => stat.avgRank >= rankBand.from && stat.avgRank <= rankBand.to);
+
+  if (selectedRows.length === 0 && rows.length > 0) {
+    selectedRows = rows
+      .sort((left, right) => {
+        const distance = Math.abs(left.stat.avgRank - rankCenter) - Math.abs(right.stat.avgRank - rankCenter);
+        if (distance !== 0) return distance;
+        return right.stat.year - left.stat.year;
+      })
+      .slice(0, Math.min(12, rows.length));
+    missingReason = missingReason ?? "当前位次区间聚合样本不足，已使用最接近该位次的录取统计补足。";
+  }
+
+  const dataMode = summarizeDataMode(selectedRows);
+
+  return {
+    label: "相似位次录取去向",
+    province: input.province,
+    subject: input.subject,
+    rankCenter,
+    rankBand,
+    yearsIncluded: [...new Set(selectedRows.map(({ stat }) => stat.year))].sort((a, b) => b - a),
+    schoolDistribution: buildDistribution(selectedRows, ({ school }) => school.name),
+    majorDistribution: buildDistribution(selectedRows, ({ stat }) => stat.major),
+    cityDistribution: buildDistribution(selectedRows, ({ school }) => school.city),
+    schoolMajorPairs: buildSchoolMajorPairs(selectedRows),
+    dataMode,
+    coverageState: coverageStateFor(dataMode),
+    privacyNote: "仅汇总公开录取数据中的院校-专业录取位次，不使用个人学生记录或可识别学生信息。",
+    missingReason
+  };
+}
+
+function buildRecommendationCandidates(input: RecommendInput): Omit<Recommendation, "alternative">[] {
   const preferredCities = input.preferredCities ?? [];
   const studentRank = input.rank ?? estimateRankFromScore(input.score ?? 600, input.subject);
   const dataset = getAdmissionDataset();
   const schoolMap = toSchoolMap(dataset.schools);
   const stats = dataset.stats;
-  const latestStats = latestStatsForProvince(input.province, stats);
+  const latestStats = latestStatsForProvince(input.province, stats, input.subject, input.majors);
 
-  const candidates = latestStats
+  return latestStats
     .map((stat) => {
       const school = schoolMap.get(stat.schoolId);
       if (!school) return null;
+      const schoolMajorStats = latestStatsForSchoolInProvince({
+        schoolId: school.id,
+        province: input.province,
+        stats,
+        subject: input.subject
+      });
       const probabilityResult = calculateProbability({
         studentRank,
         province: input.province,
@@ -1021,6 +1446,7 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
       const dataMode = dataModeFor(school, stat);
       const admissionTrend = admissionTrendFor(stat, stats);
       const probabilityExplanation = probabilityExplanationFor(probabilityResult);
+      const rankGap = Math.round(probabilityResult.gap);
       const riskLevel = riskLevelFor(category, probabilityResult.probability);
       const evidence = evidenceFor({
         school,
@@ -1040,6 +1466,26 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
         major: stat.major,
         probability: probabilityResult.probability,
         category,
+        selectionStage: "school_pool",
+        schoolReachability: {
+          probability: probabilityResult.probability,
+          rankGap,
+          zScore: probabilityExplanation.z,
+          latestYear: admissionTrend.latestYear,
+          trend: admissionTrend,
+          explanation: probabilityExplanation
+        },
+        eligibleMajors: buildEligibleMajors({
+          school,
+          stat,
+          selectedMajors: input.majors,
+          probability: probabilityResult.probability,
+          rankGap,
+          source: primarySource,
+          dataMode,
+          schoolMajorStats,
+          studentRank
+        }),
         reason: reasonText({
           school,
           stat,
@@ -1055,7 +1501,7 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
         ),
         probabilityExplanation,
         admissionTrend,
-        rankGap: Math.round(probabilityResult.gap),
+        rankGap,
         riskLevel,
         evidence,
         schoolProfile: getSchoolProfile(school, stat, category, probabilityResult.probability),
@@ -1063,6 +1509,16 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
       };
     })
     .filter((candidate): candidate is Omit<Recommendation, "alternative"> => Boolean(candidate));
+}
+
+function buildRecommendationPool(input: RecommendInput): Recommendation[] {
+  const candidates = buildRecommendationCandidates(input);
+  return candidates.map((item) => withAlternative(item, candidates));
+}
+
+export function getRecommendations(input: RecommendInput): RecommendResponse {
+  const studentRank = input.rank ?? estimateRankFromScore(input.score ?? 600, input.subject);
+  const candidates = buildRecommendationCandidates(input);
 
   const reach = selectGroup(candidates, "reach", 6);
   const match = selectGroup(candidates, "match", 6);
@@ -1072,6 +1528,292 @@ export function getRecommendations(input: RecommendInput): RecommendResponse {
   return {
     reach: reach.map((item) => withAlternative(item, alternativePool)),
     match: match.map((item) => withAlternative(item, alternativePool)),
-    safety: safety.map((item) => withAlternative(item, alternativePool))
+    safety: safety.map((item) => withAlternative(item, alternativePool)),
+    cohortOutcomes: getCohortOutcomes({
+      province: input.province,
+      subject: input.subject,
+      rank: studentRank
+    })
   };
+}
+
+export function getReachableSchools(input: RecommendInput): ReachableSchoolsResponse {
+  const recommendations = getRecommendations(input);
+  const items = [...recommendations.reach, ...recommendations.match, ...recommendations.safety];
+  const summary = summaryForRecommendations(items);
+
+  return {
+    items,
+    summary,
+    cohortOutcomes: recommendations.cohortOutcomes,
+    dataNotice: buildDataNotice(summary.dataMode)
+  };
+}
+
+export function getSchoolDetail(schoolId: number): SchoolDetailResponse | undefined {
+  const dataset = getAdmissionDataset();
+  const school = dataset.schools.find((item) => item.id === schoolId);
+  if (!school) return undefined;
+
+  const admissionStatsForSchool = dataset.stats
+    .filter((stat) => stat.schoolId === schoolId)
+    .sort((left, right) => {
+      if (right.year !== left.year) return right.year - left.year;
+      if (left.province !== right.province) return left.province.localeCompare(right.province, "zh-CN");
+      return left.major.localeCompare(right.major, "zh-CN");
+    });
+  const latestStat = admissionStatsForSchool[0];
+  const profile = latestStat ? getSchoolProfile(school, latestStat, "match", 0.5) : fallbackProfileForSchool(school);
+  const dataMode = summarizeDataModeFromModes([school.dataMode, ...admissionStatsForSchool.map((stat) => stat.dataMode)]);
+
+  return {
+    school,
+    profile,
+    admissionStats: admissionStatsForSchool,
+    dataSources: uniqueSources([...school.dataSources, ...admissionStatsForSchool.map((stat) => stat.dataSource)]),
+    dataNotice: buildDataNotice(dataMode)
+  };
+}
+
+function fallbackSourceForSchool(school: SourceAwareSchool): DataSource {
+  return (
+    school.dataSources[0] ?? {
+      id: `school-${school.id}-unavailable`,
+      sourceType: "sample",
+      sourceName: "示例数据源：学校画像缺少来源",
+      sourceUrl: "https://gaokao.chsi.com.cn/",
+      year: 2026,
+      province: school.province,
+      updatedAt: "2026-06-24T00:00:00.000Z",
+      confidence: 0,
+      notes: "该学校画像暂无可用来源，仅用于保持接口结构完整。"
+    }
+  );
+}
+
+function fallbackMajorOptionsForSchool(school: SourceAwareSchool): SchoolMajorOption[] {
+  const fallbackSource = fallbackSourceForSchool(school);
+
+  return uniqueMajorNames([...school.featuredMajors, "计算机科学与技术", "电子信息工程", "人工智能", "软件工程"])
+    .slice(0, 5)
+    .map((majorName) => {
+      const catalogEntry = getMajorCatalogEntry(majorName);
+      const guide = getCareerGuide(majorName);
+
+      return {
+        majorName,
+        plainLanguage: catalogEntry?.plainLanguage ?? guide.overview,
+        fitProbability: 0,
+        heatLevel: heatLevelFor(majorName),
+        dataMode: school.dataMode,
+        source: catalogEntry?.dataSource ?? fallbackSource,
+        reason: `${majorName} 来自 ${school.name} 的学校画像或国家专业目录，可作为校内专业池的候选方向继续核验。`,
+        risk: catalogEntry?.riskReminder ?? guide.riskReminder,
+        careerSummary: careerSummaryFor(majorName)
+      };
+    });
+}
+
+export function getSchoolMajors(input: SchoolMajorsInput): SchoolMajorsResponse | undefined {
+  const dataset = getAdmissionDataset();
+  const school = dataset.schools.find((item) => item.id === input.schoolId);
+  if (!school) return undefined;
+  const studentRank = input.rank ?? estimateRankFromScore(input.score ?? 600, input.subject);
+
+  const recommendation = buildRecommendationPool(input).find((item) => item.schoolId === input.schoolId);
+  if (recommendation) {
+    return {
+      schoolId: school.id,
+      schoolName: school.name,
+      items: recommendation.eligibleMajors,
+      dataNotice: buildDataNotice(
+        recommendation.dataMode,
+        "该校进入当前模型推荐池，专业池优先复用同一次推荐计算中的概率、风险和来源信息。"
+      )
+    };
+  }
+
+  const stat = latestStatForSchool({
+    schoolId: school.id,
+    province: input.province,
+    stats: dataset.stats.filter((item) => subjectMatchesRequirement(input.subject, item.subjectRequirement))
+  });
+  if (!stat) {
+    return {
+      schoolId: school.id,
+      schoolName: school.name,
+      items: fallbackMajorOptionsForSchool(school),
+      dataNotice: buildDataNotice(
+        school.dataMode,
+        "该校不在当前推荐池，且暂无录取统计可计算专业概率，已返回基于学校画像和教育部专业目录的候选专业。"
+      )
+    };
+  }
+
+  const probabilityResult = calculateProbability({
+    studentRank,
+    province: input.province,
+    preferredCities: input.preferredCities ?? [],
+    cityPreference: input.cityPreference,
+    majors: input.majors,
+    riskPreference: input.riskPreference,
+    stat,
+    school,
+    trendDelta: trendDeltaFor(stat, dataset.stats)
+  });
+  const source = sourceFor(school, stat);
+  const dataMode = dataModeFor(school, stat);
+  const schoolMajorStats = latestStatsForSchoolInProvince({
+    schoolId: school.id,
+    province: stat.province,
+    stats: dataset.stats,
+    subject: input.subject
+  });
+
+  return {
+    schoolId: school.id,
+    schoolName: school.name,
+    items: buildEligibleMajors({
+      school,
+      stat,
+      selectedMajors: input.majors,
+      probability: probabilityResult.probability,
+      rankGap: Math.round(probabilityResult.gap),
+      source,
+      dataMode,
+      schoolMajorStats,
+      studentRank
+    }),
+    dataNotice: buildDataNotice(
+      dataMode,
+      "该校不在当前推荐池，已使用该校最近录取统计和教育部专业目录生成 fallback 专业池。"
+    )
+  };
+}
+
+function pickMajorNameForPlan(recommendation: Recommendation, selectedMajorNames: string[]) {
+  const selectedMajorSet = new Set(selectedMajorNames);
+  return (
+    recommendation.eligibleMajors.find((major) => selectedMajorSet.has(major.majorName))?.majorName ??
+    recommendation.eligibleMajors[0]?.majorName ??
+    recommendation.major
+  );
+}
+
+type VolunteerPlanSelection = {
+  recommendation: Recommendation;
+  planCategory: RecommendationCategory;
+};
+
+function compareByReachability(left: Recommendation, right: Recommendation) {
+  if (left.probability !== right.probability) return left.probability - right.probability;
+  if (left.rankGap !== right.rankGap) return right.rankGap - left.rankGap;
+  return left.schoolName.localeCompare(right.schoolName, "zh-CN");
+}
+
+const volunteerPlanQuotas: Array<{ category: RecommendationCategory; count: number }> = [
+  { category: "reach", count: 6 },
+  { category: "match", count: 6 },
+  { category: "safety", count: 4 }
+];
+
+function buildVolunteerPlanSelections(input: VolunteerPlanInput, pool: Recommendation[]): VolunteerPlanSelection[] {
+  const usedSchoolIds = new Set<number>();
+  const selectedSchoolOrder = new Map((input.selectedSchoolIds ?? []).map((schoolId, index) => [schoolId, index]));
+  const selections: VolunteerPlanSelection[] = [];
+
+  const takeForCategory = (category: RecommendationCategory, count: number) => {
+    const selected = pool
+      .filter((recommendation) => recommendation.category === category && selectedSchoolOrder.has(recommendation.schoolId))
+      .sort((left, right) => selectedSchoolOrder.get(left.schoolId)! - selectedSchoolOrder.get(right.schoolId)!);
+    const fillers = sortForCategory(
+      pool.filter((recommendation) => recommendation.category === category && !selectedSchoolOrder.has(recommendation.schoolId)),
+      category
+    );
+
+    for (const recommendation of [...selected, ...fillers]) {
+      if (selections.filter((selection) => selection.planCategory === category).length >= count) break;
+      if (usedSchoolIds.has(recommendation.schoolId)) continue;
+      selections.push({ recommendation, planCategory: category });
+      usedSchoolIds.add(recommendation.schoolId);
+    }
+  };
+
+  for (const { category, count } of volunteerPlanQuotas) {
+    takeForCategory(category, count);
+  }
+
+  for (const { category, count } of volunteerPlanQuotas) {
+    let categoryCount = selections.filter((selection) => selection.planCategory === category).length;
+    const fallback = pool.filter((recommendation) => !usedSchoolIds.has(recommendation.schoolId)).sort(compareByReachability);
+    for (const recommendation of fallback) {
+      if (categoryCount >= count) break;
+      selections.push({ recommendation, planCategory: category });
+      usedSchoolIds.add(recommendation.schoolId);
+      categoryCount += 1;
+    }
+  }
+
+  return volunteerPlanQuotas.flatMap(({ category }) =>
+    selections.filter((selection) => selection.planCategory === category)
+  );
+}
+
+function summaryForVolunteerPlan(selections: VolunteerPlanSelection[]): SchoolFirstSummary {
+  const recommendations = selections.map((selection) => selection.recommendation);
+  const latestYear =
+    recommendations.length === 0 ? null : Math.max(...recommendations.map((item) => item.admissionTrend.latestYear));
+  const dataMode = summarizeDataModeFromModes(recommendations.map((item) => item.dataMode));
+
+  return {
+    total: selections.length,
+    reach: selections.filter((selection) => selection.planCategory === "reach").length,
+    match: selections.filter((selection) => selection.planCategory === "match").length,
+    safety: selections.filter((selection) => selection.planCategory === "safety").length,
+    latestYear,
+    dataMode,
+    dataStatus: dataStatusText(dataMode)
+  };
+}
+
+function toVolunteerPlanItem(
+  recommendation: Recommendation,
+  index: number,
+  selectedMajorNames: string[],
+  planCategory: RecommendationCategory
+): VolunteerPlanItem {
+  const majorName = pickMajorNameForPlan(recommendation, selectedMajorNames);
+
+  return {
+    id: `${planCategory}-${recommendation.schoolId}-${index + 1}`,
+    category: recommendation.category,
+    slotCategory: planCategory,
+    schoolId: recommendation.schoolId,
+    schoolName: recommendation.schoolName,
+    majorName,
+    probability: recommendation.probability,
+    dataMode: recommendation.dataMode,
+    reason: recommendation.reason,
+    risk: recommendation.risk,
+    alternativeSchoolName: recommendation.alternative.schoolName
+  };
+}
+
+export function getVolunteerPlan(input: VolunteerPlanInput): VolunteerPlanResponse {
+  const selectedMajorNames = input.selectedMajors && input.selectedMajors.length > 0 ? input.selectedMajors : input.majors;
+  const pool = buildRecommendationPool(input);
+  const selections = buildVolunteerPlanSelections(input, pool);
+  const summary = summaryForVolunteerPlan(selections);
+
+  return {
+    items: selections.map(({ recommendation, planCategory }, index) =>
+      toVolunteerPlanItem(recommendation, index, selectedMajorNames, planCategory)
+    ),
+    summary,
+    dataNotice: buildDataNotice(summary.dataMode)
+  };
+}
+
+export function getMajorDetail(majorName: string): MajorCatalogEntry | undefined {
+  return getMajorCatalogEntry(majorName);
 }

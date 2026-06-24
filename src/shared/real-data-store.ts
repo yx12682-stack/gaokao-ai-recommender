@@ -9,8 +9,72 @@ import type {
   SourceAwareSchool,
   SourceType
 } from "./data-model";
+import { z } from "zod";
 
 const sampleUpdatedAt = "2026-06-23T00:00:00.000Z";
+
+const sourceTypeValues = [
+  "sunshine_college",
+  "sunshine_major",
+  "sunshine_charter",
+  "provincial_exam_authority",
+  "school_admission_office",
+  "manual_verified",
+  "sample"
+] as const;
+
+const importDataModeValues = ["verified", "partial", "sample"] as const;
+
+const optionalStringListSchema = z.array(z.string().trim().min(1)).optional();
+
+const httpSourceUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => value.startsWith("https://") || value.startsWith("http://"), {
+    message: "sourceUrl must be an http(s) URL"
+  });
+
+const admissionImportRowSchema = z
+  .object({
+    schoolName: z.string().trim().min(1),
+    schoolProvince: z.string().trim().min(1).optional(),
+    schoolType: z.string().trim().min(1).optional(),
+    schoolLevel: z.string().trim().min(1).optional(),
+    city: z.string().trim().min(1),
+    ownership: z.string().trim().min(1).optional(),
+    educationType: z.string().trim().min(1).optional(),
+    featuredMajors: optionalStringListSchema,
+    advantagedDisciplines: optionalStringListSchema,
+    campusAndEmployment: z.string().trim().min(1).optional(),
+    suitableFor: optionalStringListSchema,
+    province: z.string().trim().min(1),
+    major: z.string().trim().min(1),
+    year: z.number().int().min(2000).max(2100),
+    minRank: z.number().finite().positive(),
+    avgRank: z.number().finite().positive(),
+    stdRank: z.number().finite().positive(),
+    planCount: z.number().int().positive().optional(),
+    subjectRequirement: z.string().trim().min(1).optional(),
+    sourceType: z.enum(sourceTypeValues).default("manual_verified"),
+    sourceName: z.string().trim().min(1),
+    sourceUrl: httpSourceUrlSchema,
+    updatedAt: z.string().datetime(),
+    verifiedAt: z.string().datetime().optional(),
+    confidence: z.number().finite().min(0).max(1).optional(),
+    notes: z.string().trim().min(1).optional(),
+    dataMode: z.enum(importDataModeValues).optional()
+  })
+  .superRefine((row, context) => {
+    if (row.sourceType === "sample" && row.dataMode && row.dataMode !== "sample") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dataMode"],
+        message: "sample sourceType can only be imported as sample dataMode"
+      });
+    }
+  });
+
+type ValidatedAdmissionImportRow = z.infer<typeof admissionImportRowSchema>;
 
 const sampleSource = (year: number, province: string): DataSource => ({
   id: `sample-${province}-${year}`,
@@ -186,6 +250,11 @@ const seedStats: SourceAwareAdmissionStat[] = Object.entries(provinceRankMultipl
 const importedSchools: SourceAwareSchool[] = [];
 const importedStats: SourceAwareAdmissionStat[] = [];
 
+export function resetImportedAdmissionData() {
+  importedSchools.length = 0;
+  importedStats.length = 0;
+}
+
 export function getAdmissionDataset(): AdmissionDataset {
   return {
     schools: [...baseSchools, ...importedSchools],
@@ -234,38 +303,39 @@ export function importAdmissionData(rows: AdmissionImportRow[]): ImportResult {
   let accepted = 0;
 
   rows.forEach((row, index) => {
-    const missing = requiredMissing(row);
-    if (missing.length > 0) {
-      errors.push({ index, message: `Missing required field(s): ${missing.join(", ")}` });
+    const parsed = admissionImportRowSchema.safeParse(row);
+    if (!parsed.success) {
+      errors.push({ index, message: validationMessageFor(parsed.error) });
       return;
     }
 
-    const sourceType = row.sourceType ?? "manual_verified";
-    const dataMode = row.dataMode ?? (sourceType === "sample" ? "sample" : "verified");
-    const school = ensureImportedSchool(row, dataMode);
+    const validatedRow = parsed.data;
+    const sourceType = validatedRow.sourceType;
+    const dataMode = validatedRow.dataMode ?? (sourceType === "sample" ? "sample" : "verified");
+    const school = ensureImportedSchool(validatedRow, dataMode);
     const source: DataSource = {
-      id: `${sourceType}-${row.province}-${row.schoolName}-${row.major}-${row.year}-${importedStats.length + accepted}`,
+      id: `${sourceType}-${validatedRow.province}-${validatedRow.schoolName}-${validatedRow.major}-${validatedRow.year}-${importedStats.length + accepted}`,
       sourceType,
-      sourceName: row.sourceName!,
-      sourceUrl: row.sourceUrl!,
-      year: row.year!,
-      province: row.province!,
-      updatedAt: row.updatedAt!,
-      verifiedAt: row.verifiedAt,
-      confidence: row.confidence ?? (dataMode === "verified" ? 0.92 : 0.45),
-      notes: row.notes
+      sourceName: validatedRow.sourceName,
+      sourceUrl: validatedRow.sourceUrl,
+      year: validatedRow.year,
+      province: validatedRow.province,
+      updatedAt: validatedRow.updatedAt,
+      verifiedAt: validatedRow.verifiedAt,
+      confidence: validatedRow.confidence ?? (dataMode === "verified" ? 0.92 : 0.45),
+      notes: validatedRow.notes
     };
 
     importedStats.push({
       schoolId: school.id,
-      year: row.year!,
-      province: row.province!,
-      major: row.major!,
-      minRank: row.minRank!,
-      avgRank: row.avgRank!,
-      stdRank: row.stdRank!,
-      planCount: row.planCount,
-      subjectRequirement: row.subjectRequirement,
+      year: validatedRow.year,
+      province: validatedRow.province,
+      major: validatedRow.major,
+      minRank: validatedRow.minRank,
+      avgRank: validatedRow.avgRank,
+      stdRank: validatedRow.stdRank,
+      planCount: validatedRow.planCount,
+      subjectRequirement: validatedRow.subjectRequirement,
       dataMode,
       dataSource: source
     });
@@ -290,33 +360,33 @@ function withSource(
   };
 }
 
-function ensureImportedSchool(row: AdmissionImportRow, dataMode: DataMode): SourceAwareSchool {
+function ensureImportedSchool(row: ValidatedAdmissionImportRow, dataMode: DataMode): SourceAwareSchool {
   const existing = [...baseSchools, ...importedSchools].find((school) => school.name === row.schoolName);
   if (existing) return existing;
 
   const source: DataSource = {
     id: `school-${row.schoolName}-${importedSchools.length + 1}`,
-    sourceType: row.sourceType ?? "manual_verified",
-    sourceName: row.sourceName!,
-    sourceUrl: row.sourceUrl!,
-    year: row.year!,
-    province: row.schoolProvince ?? row.province!,
-    updatedAt: row.updatedAt!,
+    sourceType: row.sourceType,
+    sourceName: row.sourceName,
+    sourceUrl: row.sourceUrl,
+    year: row.year,
+    province: row.schoolProvince ?? row.province,
+    updatedAt: row.updatedAt,
     verifiedAt: row.verifiedAt,
     confidence: row.confidence ?? 0.9,
     notes: row.notes
   };
   const school: SourceAwareSchool = {
     id: baseSchools.length + importedSchools.length + 1,
-    name: row.schoolName!,
-    province: row.schoolProvince ?? row.province!,
+    name: row.schoolName,
+    province: row.schoolProvince ?? row.province,
     type: row.schoolType ?? "普通本科",
-    city: row.city!,
+    city: row.city,
     level: row.schoolLevel ?? "真实导入院校",
     ownership: row.ownership ?? "以官方来源为准",
     educationType: row.educationType ?? "普通本科",
-    featuredMajors: row.featuredMajors ?? [row.major!],
-    advantagedDisciplines: row.advantagedDisciplines ?? [row.major!],
+    featuredMajors: row.featuredMajors ?? [row.major],
+    advantagedDisciplines: row.advantagedDisciplines ?? [row.major],
     campusAndEmployment: row.campusAndEmployment ?? "已导入官方录取数据，学校画像需继续补充阳光高考与学校招生网信息。",
     suitableFor: row.suitableFor ?? ["重视官方数据核验", "希望按省份与专业精确评估"],
     dataMode,
@@ -326,24 +396,13 @@ function ensureImportedSchool(row: AdmissionImportRow, dataMode: DataMode): Sour
   return school;
 }
 
-function requiredMissing(row: AdmissionImportRow) {
-  const required: Array<keyof AdmissionImportRow> = [
-    "schoolName",
-    "province",
-    "city",
-    "major",
-    "year",
-    "minRank",
-    "avgRank",
-    "stdRank",
-    "sourceName",
-    "sourceUrl",
-    "updatedAt"
-  ];
-  return required.filter((field) => {
-    const value = row[field];
-    return value === undefined || value === null || value === "";
-  });
+function validationMessageFor(error: z.ZodError) {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join(".") : "record";
+      return `${path}: ${issue.message}`;
+    })
+    .join("; ");
 }
 
 function newerIso(current: string | null, next: string) {
@@ -367,4 +426,3 @@ function suitableFor(type: string, city: string) {
   if (["北京", "上海", "深圳", "杭州", "南京", "广州"].includes(city)) labels.push("偏好强产业城市资源");
   return labels;
 }
-

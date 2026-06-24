@@ -8,6 +8,7 @@ import {
   ChartNoAxesColumnIncreasing,
   CheckCircle2,
   ChevronRight,
+  ClipboardList,
   Compass,
   Database,
   ExternalLink,
@@ -28,13 +29,54 @@ import {
   cityOptions,
   majorOptions,
   provinceOptions,
+  type ReachableSchoolsResponse,
   type Recommendation,
-  type RecommendResponse,
   type RiskPreference,
-  type SubjectType
+  type SubjectType,
+  type VolunteerPlanResponse
 } from "./shared/recommendation";
 
-type GroupKey = keyof RecommendResponse;
+type GroupKey = "reach" | "match" | "safety";
+type RequestMode = "schools" | "plan" | null;
+type SchoolPoolItem = ReachableSchoolsResponse["items"][number];
+type VolunteerPlanItem = VolunteerPlanResponse["items"][number];
+type CockpitPhase = "idle" | "school_pool" | "volunteer_plan";
+type CockpitTone = "idle" | "accent" | "success" | "warning" | GroupKey;
+
+interface CockpitCardSignal {
+  key: "candidateSchools" | "selection" | "dataConfidence" | "volunteerPlan";
+  label: string;
+  value: string;
+  detail: string;
+  tone: CockpitTone;
+}
+
+interface CockpitDistributionItem {
+  label: string;
+  value: number;
+  share: number;
+  detail?: string;
+  tone?: CockpitTone;
+}
+
+interface CockpitSignalLane {
+  key: "riskGradient" | "cityDistribution" | "majorDistribution" | "historySignal";
+  title: string;
+  summary: string;
+  emptyText: string;
+  items: CockpitDistributionItem[];
+}
+
+interface CockpitSignals {
+  phase: CockpitPhase;
+  statusLabel: string;
+  statusDetail: string;
+  cards: CockpitCardSignal[];
+  riskGradient: CockpitSignalLane;
+  cityDistribution: CockpitSignalLane;
+  majorDistribution: CockpitSignalLane;
+  historySignal: CockpitSignalLane;
+}
 
 interface FormState {
   score: string;
@@ -64,17 +106,19 @@ const groupMeta: Record<
   GroupKey,
   {
     title: string;
+    shortTitle: string;
     count: string;
     tone: string;
     icon: typeof TrendingUp;
   }
 > = {
-  reach: { title: "冲刺", count: "6", tone: "reach", icon: TrendingUp },
-  match: { title: "稳妥", count: "6", tone: "match", icon: Radar },
-  safety: { title: "保底", count: "4", tone: "safety", icon: ShieldCheck }
+  reach: { title: "冲刺学校", shortTitle: "冲", count: "6", tone: "reach", icon: TrendingUp },
+  match: { title: "稳妥学校", shortTitle: "稳", count: "6", tone: "match", icon: Radar },
+  safety: { title: "保底学校", shortTitle: "保", count: "4", tone: "safety", icon: ShieldCheck }
 };
 
-const thoughtSteps = ["正在分析录取概率", "正在匹配院校", "正在生成最优志愿方案"];
+const schoolThoughtSteps = ["读取学生画像", "生成可达学校池", "准备校内专业预览"];
+const planThoughtSteps = ["读取已选学校专业", "补齐冲稳保梯度", "生成 6/6/4 志愿表"];
 
 const initialForm: FormState = {
   score: "642",
@@ -83,7 +127,7 @@ const initialForm: FormState = {
   subject: "physics",
   cityPreference: 0.72,
   preferredCities: ["北京", "上海", "杭州", "南京"],
-  majors: ["计算机科学与技术", "人工智能", "电子信息工程"],
+  majors: [],
   riskPreference: "balanced"
 };
 
@@ -95,11 +139,16 @@ function cnPercent(probability: number) {
   return `${Math.round(probability * 100)}%`;
 }
 
+function formatNumber(value: number | null | undefined) {
+  if (value === null || value === undefined) return "-";
+  return value.toLocaleString("zh-CN");
+}
+
 function dataModeLabel(mode: Recommendation["dataMode"]) {
   const labels = {
     verified: "真实核验",
     partial: "部分真实",
-    sample: "示例结构",
+    sample: "样例数据",
     unavailable: "暂无数据"
   };
   return labels[mode] ?? "未知";
@@ -114,6 +163,15 @@ function riskLevelLabel(level: Recommendation["riskLevel"]) {
   return labels[level] ?? "未知风险";
 }
 
+function heatLabel(level: SchoolPoolItem["eligibleMajors"][number]["heatLevel"]) {
+  const labels = {
+    high: "热门",
+    medium: "中热",
+    low: "相对冷门"
+  };
+  return labels[level] ?? "未知热度";
+}
+
 function trendLabel(direction: Recommendation["admissionTrend"]["direction"]) {
   const labels = {
     rising: "位次趋紧",
@@ -125,6 +183,215 @@ function trendLabel(direction: Recommendation["admissionTrend"]["direction"]) {
 
 function uniqueBy<T>(items: T[], getKey: (item: T) => string) {
   return [...new Map(items.map((item) => [getKey(item), item])).values()];
+}
+
+export function groupReachableSchools<T extends { category: GroupKey }>(items: T[]) {
+  return items.reduce<Record<GroupKey, T[]>>(
+    (groups, item) => {
+      groups[item.category].push(item);
+      return groups;
+    },
+    { reach: [], match: [], safety: [] }
+  );
+}
+
+export function toggleUniqueSelection<T extends string | number>(values: T[], value: T) {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+export function buildSelectedMajorKey(schoolId: number, majorName: string) {
+  return `${schoolId}:${majorName}`;
+}
+
+export function removeSelectedMajorsForSchool(keys: string[], schoolId: number) {
+  return keys.filter((key) => readSelectedMajorKey(key).schoolId !== schoolId);
+}
+
+function readSelectedMajorKey(key: string) {
+  const [schoolId, ...majorParts] = key.split(":");
+  return {
+    schoolId: Number(schoolId),
+    majorName: majorParts.join(":")
+  };
+}
+
+export function deriveSelectedMajorNames(keys: string[]) {
+  return [...new Set(keys.map((key) => readSelectedMajorKey(key).majorName).filter(Boolean))];
+}
+
+function shareOf(value: number, total: number) {
+  if (total <= 0) return 0;
+  return Math.round((value / total) * 100);
+}
+
+function topCountItems(counts: Record<string, number>, limit = 4): CockpitDistributionItem[] {
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([label, value]) => ({
+      label,
+      value,
+      share: shareOf(value, total)
+    }));
+}
+
+function dataConfidenceTone(mode: Recommendation["dataMode"] | undefined): CockpitTone {
+  if (mode === "verified") return "success";
+  if (mode === "partial") return "accent";
+  if (mode === "sample") return "warning";
+  return "idle";
+}
+
+export function buildCockpitSignals(
+  pool: ReachableSchoolsResponse | null,
+  selectedSchoolCount: number,
+  selectedMajorCount: number,
+  plan: VolunteerPlanResponse | null
+): CockpitSignals {
+  const phase: CockpitPhase = plan ? "volunteer_plan" : pool ? "school_pool" : "idle";
+  const summary = plan?.summary ?? pool?.summary ?? null;
+  const candidateTotal = pool?.summary.total ?? pool?.items.length ?? 0;
+  const dataMode = summary?.dataMode;
+  const dataNotice = plan?.dataNotice ?? pool?.dataNotice ?? "提交画像后显示数据可信状态。";
+
+  const gradientTotal = summary ? summary.reach + summary.match + summary.safety : 0;
+  const riskGradientItems: CockpitDistributionItem[] = summary
+    ? [
+        { label: "冲刺", value: summary.reach, share: shareOf(summary.reach, gradientTotal), tone: "reach" },
+        { label: "稳妥", value: summary.match, share: shareOf(summary.match, gradientTotal), tone: "match" },
+        { label: "保底", value: summary.safety, share: shareOf(summary.safety, gradientTotal), tone: "safety" }
+      ]
+    : [];
+
+  const cityCounts = (pool?.items ?? []).reduce<Record<string, number>>((counts, item) => {
+    counts[item.city] = (counts[item.city] ?? 0) + 1;
+    return counts;
+  }, {});
+
+  const majorCounts = plan
+    ? plan.items.reduce<Record<string, number>>((counts, item) => {
+        counts[item.majorName] = (counts[item.majorName] ?? 0) + 1;
+        return counts;
+      }, {})
+    : (pool?.items ?? []).reduce<Record<string, number>>((counts, item) => {
+        item.eligibleMajors.slice(0, 3).forEach((major) => {
+          counts[major.majorName] = (counts[major.majorName] ?? 0) + 1;
+        });
+        return counts;
+      }, {});
+
+  const cohortPairs = pool?.cohortOutcomes.schoolMajorPairs ?? [];
+  const historyItems = cohortPairs.slice(0, 4).map((pair) => {
+    const value = Math.round(pair.share * 100);
+    return {
+      label: `${pair.schoolName} · ${pair.majorName}`,
+      value,
+      share: value,
+      detail: `${pair.city} · ${pair.latestYear}`
+    };
+  });
+
+  return {
+    phase,
+    statusLabel:
+      phase === "volunteer_plan" ? "志愿表已生成" : phase === "school_pool" ? "学校池已就绪" : "等待画像输入",
+    statusDetail:
+      phase === "volunteer_plan"
+        ? "正在基于学校池、校内专业与 6/6/4 梯度呈现最终志愿结构。"
+        : phase === "school_pool"
+          ? "可继续打开学校详情，选择学校和校内专业。"
+          : "提交分数、位次与偏好后，将生成学校优先的决策信号。",
+    cards: [
+      {
+        key: "candidateSchools",
+        label: "候选学校",
+        value: formatNumber(candidateTotal),
+        detail: pool ? `冲 ${pool.summary.reach} · 稳 ${pool.summary.match} · 保 ${pool.summary.safety}` : "生成后显示学校池规模",
+        tone: pool ? "accent" : "idle"
+      },
+      {
+        key: "selection",
+        label: "已选学校 / 专业",
+        value: `${selectedSchoolCount} 所 / ${selectedMajorCount} 专业`,
+        detail: selectedSchoolCount > 0 || selectedMajorCount > 0 ? "用于生成志愿表的显式偏好" : "可在学校详情中选择",
+        tone: selectedSchoolCount > 0 || selectedMajorCount > 0 ? "success" : "idle"
+      },
+      {
+        key: "dataConfidence",
+        label: "数据可信状态",
+        value: dataMode ? dataModeLabel(dataMode) : "等待数据",
+        detail: dataNotice,
+        tone: dataConfidenceTone(dataMode)
+      },
+      {
+        key: "volunteerPlan",
+        label: "志愿表结构",
+        value: plan ? `${plan.summary.reach} / ${plan.summary.match} / ${plan.summary.safety}` : pool ? "待生成" : "未开始",
+        detail: plan ? "已输出冲稳保志愿表" : pool ? "选择学校和专业后生成" : "学校池生成后开启",
+        tone: plan ? "success" : pool ? "warning" : "idle"
+      }
+    ],
+    riskGradient: {
+      key: "riskGradient",
+      title: "风险梯度",
+      summary: summary ? `冲 ${summary.reach} · 稳 ${summary.match} · 保 ${summary.safety}` : "暂无风险梯度",
+      emptyText: "等待学校池生成",
+      items: riskGradientItems
+    },
+    cityDistribution: {
+      key: "cityDistribution",
+      title: "城市分布",
+      summary: Object.keys(cityCounts).length > 0 ? `${Object.keys(cityCounts).length} 个城市进入候选池` : "暂无城市分布",
+      emptyText: "生成学校池后显示城市分布",
+      items: topCountItems(cityCounts)
+    },
+    majorDistribution: {
+      key: "majorDistribution",
+      title: plan ? "计划专业分布" : "专业方向分布",
+      summary:
+        Object.keys(majorCounts).length > 0
+          ? `${Object.keys(majorCounts).length} 个专业方向`
+          : plan
+            ? "暂无计划专业"
+            : "暂无专业方向",
+      emptyText: plan ? "志愿表暂无专业" : "生成学校池后显示专业方向",
+      items: topCountItems(majorCounts)
+    },
+    historySignal: {
+      key: "historySignal",
+      title: "历史去向信号",
+      summary:
+        historyItems.length > 0
+          ? `${historyItems.length} 条相似去向`
+          : pool?.cohortOutcomes.missingReason ?? "等待相似位次去向",
+      emptyText: pool?.cohortOutcomes.missingReason ?? "等待相似位次去向",
+      items: historyItems
+    }
+  };
+}
+
+function buildProfilePayload(form: FormState) {
+  return {
+    score: form.score ? Number(form.score) : undefined,
+    rank: form.rank ? Number(form.rank) : undefined,
+    province: form.province,
+    subject: form.subject,
+    cityPreference: form.cityPreference,
+    preferredCities: form.preferredCities,
+    majors: form.majors,
+    riskPreference: form.riskPreference
+  };
+}
+
+async function readErrorMessage(response: Response, fallback: string) {
+  try {
+    const body = (await response.json()) as { error?: string; details?: Array<{ message?: string }> };
+    const details = body.details?.map((item) => item.message).filter(Boolean).join("；");
+    return details || body.error || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function useCardTilt() {
@@ -202,20 +469,320 @@ function SkeletonScreen() {
   );
 }
 
-function RecommendationCard({
+function FlowSteps({
+  hasPool,
+  hasSelection,
+  hasPlan,
+  requestMode
+}: {
+  hasPool: boolean;
+  hasSelection: boolean;
+  hasPlan: boolean;
+  requestMode: RequestMode;
+}) {
+  const steps = [
+    { title: "输入画像", hint: "分数 / 位次 / 城市", done: hasPool, active: !hasPool || requestMode === "schools" },
+    { title: "生成学校池", hint: "冲稳保可达梯度", done: hasPool, active: hasPool && !hasSelection },
+    { title: "选择学校专业", hint: "校内专业解释", done: hasSelection, active: hasPool && !hasPlan },
+    { title: "生成志愿表", hint: "6 / 6 / 4", done: hasPlan, active: requestMode === "plan" || hasPlan }
+  ];
+
+  return (
+    <section className="flow-rail" aria-label="填报决策流程">
+      {steps.map((step, index) => (
+        <motion.div
+          className={`flow-step ${step.done ? "is-done" : ""} ${step.active ? "is-active" : ""}`}
+          key={step.title}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: index * 0.06, duration: 0.34 }}
+        >
+          <span>{index + 1}</span>
+          <div>
+            <strong>{step.title}</strong>
+            <p>{step.hint}</p>
+          </div>
+        </motion.div>
+      ))}
+    </section>
+  );
+}
+
+function ThoughtPanel({
+  requestMode,
+  stepIndex,
+  hasPool,
+  hasPlan
+}: {
+  requestMode: RequestMode;
+  stepIndex: number;
+  hasPool: boolean;
+  hasPlan: boolean;
+}) {
+  const isGenerating = requestMode !== null;
+  const steps = requestMode === "plan" ? planThoughtSteps : schoolThoughtSteps;
+  const idleText = hasPlan ? "志愿表已生成，可继续调整学校或专业" : hasPool ? "学校池已生成，继续查看校内专业" : "等待生成学校池";
+
+  return (
+    <div className={`thought-panel ${isGenerating ? "is-generating" : ""}`}>
+      <div className="analysis-beam" aria-hidden="true" />
+      <div className="thought-core">
+        <div className={`thinking-mark ${isGenerating ? "is-thinking" : ""}`}>
+          <BrainCircuit size={20} />
+        </div>
+        <div>
+          <span>AI Decision Engine</span>
+          <strong>{isGenerating ? steps[stepIndex] : idleText}</strong>
+        </div>
+      </div>
+      <div className="thought-steps">
+        {steps.map((step, index) => (
+          <span className={index <= stepIndex && isGenerating ? "is-active" : ""} key={step}>
+            {step}
+          </span>
+        ))}
+      </div>
+      <div className="analysis-pipeline" aria-hidden="true">
+        {steps.map((step, index) => (
+          <i className={index <= stepIndex && isGenerating ? "is-active" : ""} key={step}>
+            <span />
+          </i>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SignalLane({ lane }: { lane: CockpitSignalLane }) {
+  const isHistory = lane.key === "historySignal";
+
+  return (
+    <article className={`signal-lane ${lane.key}`}>
+      <div className="signal-lane-head">
+        <span>{lane.title}</span>
+        <strong>{lane.summary}</strong>
+      </div>
+      <div className="signal-bars">
+        {lane.items.length === 0 ? (
+          <p>{lane.emptyText}</p>
+        ) : (
+          lane.items.map((item) => {
+            const width = item.value > 0 ? Math.max(item.share, 6) : 0;
+            return (
+              <div className={`signal-item ${item.tone ?? ""}`} key={`${lane.key}-${item.label}`}>
+                <div className="signal-row">
+                  <span>{item.label}</span>
+                  <strong>
+                    {item.value}
+                    {isHistory ? "%" : ""}
+                  </strong>
+                </div>
+                <div className="signal-track" aria-hidden="true">
+                  <span style={{ width: `${width}%` }} />
+                </div>
+                {item.detail && <em>{item.detail}</em>}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </article>
+  );
+}
+
+function DecisionCockpit({ signals, requestMode }: { signals: CockpitSignals; requestMode: RequestMode }) {
+  const lanes = [signals.riskGradient, signals.cityDistribution, signals.majorDistribution, signals.historySignal];
+  const cardIcons: Record<CockpitCardSignal["key"], typeof Layers3> = {
+    candidateSchools: Layers3,
+    selection: CheckCircle2,
+    dataConfidence: Database,
+    volunteerPlan: ClipboardList
+  };
+
+  return (
+    <motion.section
+      className={`decision-cockpit phase-${signals.phase} ${requestMode ? "is-analyzing" : ""}`}
+      aria-label="AI 决策驾驶舱"
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <div className="cockpit-shell-line" aria-hidden="true" />
+      <div className="cockpit-header">
+        <div>
+          <span className="eyebrow">
+            <BrainCircuit size={15} />
+            AI Decision Cockpit
+          </span>
+          <h2>决策驾驶舱</h2>
+        </div>
+        <div className="cockpit-status">
+          <span>{signals.statusLabel}</span>
+          <p>{signals.statusDetail}</p>
+        </div>
+      </div>
+
+      <div className="cockpit-card-grid">
+        {signals.cards.map((card, index) => {
+          const Icon = cardIcons[card.key];
+          return (
+            <motion.article
+              className={`cockpit-card ${card.tone}`}
+              key={card.key}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.045, duration: 0.32 }}
+            >
+              <div className="cockpit-card-head">
+                <Icon size={16} />
+                <span>{card.label}</span>
+              </div>
+              <strong>{card.value}</strong>
+              <p>{card.detail}</p>
+            </motion.article>
+          );
+        })}
+      </div>
+
+      <div className="cockpit-lanes">
+        {lanes.map((lane, index) => (
+          <motion.div
+            key={lane.key}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.12 + index * 0.05, duration: 0.34 }}
+          >
+            <SignalLane lane={lane} />
+          </motion.div>
+        ))}
+      </div>
+    </motion.section>
+  );
+}
+
+function DistributionChips({ items, emptyText }: { items: Array<[string, number]>; emptyText: string }) {
+  if (items.length === 0) return <p>{emptyText}</p>;
+  return (
+    <div className="distribution-chips">
+      {items.map(([label, count]) => (
+        <span key={label}>
+          {label}
+          <em>{count}</em>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SchoolPoolOverview({ pool }: { pool: ReachableSchoolsResponse }) {
+  const overview = useMemo(() => {
+    const countBy = <Key extends string>(items: SchoolPoolItem[], getKey: (item: SchoolPoolItem) => Key) =>
+      items.reduce<Record<Key, number>>((acc, item) => {
+        const key = getKey(item);
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {} as Record<Key, number>);
+
+    const risk = countBy(pool.items, (item) => item.riskLevel);
+    const cities = Object.entries(countBy(pool.items, (item) => item.city)).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const majors = Object.entries(
+      pool.items.reduce<Record<string, number>>((acc, item) => {
+        item.eligibleMajors.slice(0, 3).forEach((major) => {
+          acc[major.majorName] = (acc[major.majorName] ?? 0) + 1;
+        });
+        return acc;
+      }, {})
+    )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    return { risk, cities, majors };
+  }, [pool]);
+
+  const cohortPairs = pool.cohortOutcomes.schoolMajorPairs.slice(0, 5);
+
+  return (
+    <div className="school-pool-overview">
+      <div className="data-notice">
+        <Database size={17} />
+        <p>{pool.dataNotice}</p>
+      </div>
+
+      <div className="overview-grid">
+        <div>
+          <span>学校池总览</span>
+          <strong>{pool.summary.total}</strong>
+          <p>
+            冲 {pool.summary.reach} · 稳 {pool.summary.match} · 保 {pool.summary.safety}
+          </p>
+        </div>
+        <div>
+          <span>风险分布</span>
+          <strong>
+            高 {overview.risk.high ?? 0} · 中 {overview.risk.medium ?? 0} · 低 {overview.risk.low ?? 0}
+          </strong>
+          <p>由学校可达概率、rankGap 与趋势共同判断</p>
+        </div>
+        <div>
+          <span>城市分布</span>
+          <DistributionChips items={overview.cities} emptyText="暂无城市分布" />
+        </div>
+        <div>
+          <span>专业方向分布</span>
+          <DistributionChips items={overview.majors} emptyText="暂无专业方向" />
+        </div>
+      </div>
+
+      <section className="cohort-panel">
+        <div className="cohort-head">
+          <div>
+            <span>{pool.cohortOutcomes.label}</span>
+            <h3>
+              {formatNumber(pool.cohortOutcomes.rankBand.from)} - {formatNumber(pool.cohortOutcomes.rankBand.to)} 位次去向
+            </h3>
+          </div>
+          <strong>{dataModeLabel(pool.cohortOutcomes.dataMode)}</strong>
+        </div>
+        <div className="cohort-list">
+          {cohortPairs.length === 0 ? (
+            <p>{pool.cohortOutcomes.missingReason ?? "暂无相似位次去向样本"}</p>
+          ) : (
+            cohortPairs.map((pair) => (
+              <div className="cohort-row" key={`${pair.schoolName}-${pair.majorName}`}>
+                <div>
+                  <strong>{pair.schoolName}</strong>
+                  <span>
+                    {pair.majorName} · {pair.city} · {pair.latestYear}
+                  </span>
+                </div>
+                <em>{Math.round(pair.share * 100)}%</em>
+              </div>
+            ))
+          )}
+        </div>
+        <p className="privacy-note">{pool.cohortOutcomes.privacyNote}</p>
+      </section>
+    </div>
+  );
+}
+
+function SchoolCard({
   item,
   index,
-  onOpen
+  onOpen,
+  isSelected
 }: {
-  item: Recommendation;
+  item: SchoolPoolItem;
   index: number;
-  onOpen: (item: Recommendation) => void;
+  onOpen: (item: SchoolPoolItem) => void;
+  isSelected: boolean;
 }) {
   const tilt = useCardTilt();
+  const previewMajors = item.eligibleMajors.slice(0, 3);
 
   return (
     <motion.article
-      className={`recommendation-card ${item.category}`}
+      className={`recommendation-card ${item.category} ${isSelected ? "is-selected-school" : ""}`}
       ref={tilt.ref}
       onMouseMove={tilt.handleMove}
       onMouseLeave={tilt.handleLeave}
@@ -243,38 +810,51 @@ function RecommendationCard({
         </div>
         <div className="probability-orb">
           <strong>{cnPercent(item.probability)}</strong>
-          <span>概率</span>
+          <span>录取</span>
         </div>
-      </div>
-      <div className="major-row">
-        <GraduationCap size={16} />
-        <span>{item.major}</span>
       </div>
       <div className="source-row">
         <span className={`source-chip ${item.dataMode}`}>{dataModeLabel(item.dataMode)}</span>
-        <span>{item.admissionTrend.latestYear} 年</span>
-        <span>gap {item.rankGap.toLocaleString("zh-CN")}</span>
+        <span>{groupMeta[item.category].title}</span>
+        <span>rankGap {formatNumber(item.rankGap)}</span>
         <span className={`risk-chip ${item.riskLevel}`}>{riskLevelLabel(item.riskLevel)}</span>
+        {isSelected && <span className="selected-chip">已选学校</span>}
+      </div>
+      <div className="major-preview">
+        <span>
+          <GraduationCap size={15} />
+          该校可选专业预览
+        </span>
+        <div>
+          {previewMajors.map((major) => (
+            <em key={major.majorName}>{major.majorName}</em>
+          ))}
+        </div>
       </div>
       <p className="reason">{item.reason}</p>
-      <div className="risk-box">
-        <span>风险说明</span>
-        <p>{item.risk}</p>
-      </div>
-      <div className="alternative-row">
-        <span>替代建议</span>
-        <strong>{item.alternative.schoolName}</strong>
-        <em>{cnPercent(item.alternative.probability)}</em>
-      </div>
       <button className="detail-link" type="button" onClick={() => onOpen(item)}>
-        预览学校与职业路径
+        查看该校专业
         <ChevronRight size={15} />
       </button>
     </motion.article>
   );
 }
 
-function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose: () => void }) {
+function DetailDrawer({
+  item,
+  selectedSchoolIds,
+  selectedMajorKeys,
+  onToggleSchool,
+  onToggleMajor,
+  onClose
+}: {
+  item: SchoolPoolItem | null;
+  selectedSchoolIds: number[];
+  selectedMajorKeys: string[];
+  onToggleSchool: (schoolId: number) => void;
+  onToggleMajor: (schoolId: number, majorName: string) => void;
+  onClose: () => void;
+}) {
   return (
     <AnimatePresence>
       {item && (
@@ -295,10 +875,10 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
           >
             <div className="drawer-head">
               <div>
-                <span>School Preview</span>
+                <span>School First Detail</span>
                 <h2>{item.schoolName}</h2>
                 <p>
-                  {item.city} · {item.type} · {item.major}
+                  {item.city} · {item.province} · {item.type}
                 </p>
               </div>
               <button className="ghost-icon" type="button" onClick={onClose} aria-label="关闭详情">
@@ -306,25 +886,37 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
               </button>
             </div>
 
+            <div className="drawer-actions">
+              <button
+                className={`selection-action ${selectedSchoolIds.includes(item.schoolId) ? "is-selected" : ""}`}
+                type="button"
+                onClick={() => onToggleSchool(item.schoolId)}
+              >
+                <CheckCircle2 size={17} />
+                {selectedSchoolIds.includes(item.schoolId) ? "已选择该学校" : "选择该学校"}
+              </button>
+              <span>选择学校和校内专业后，可生成 6/6/4 志愿表。</span>
+            </div>
+
             <div className="drawer-hero">
               <div>
                 <span>录取概率</span>
-                <strong>{cnPercent(item.probability)}</strong>
+                <strong>{cnPercent(item.schoolReachability.probability)}</strong>
               </div>
               <div>
-                <span>志愿梯度</span>
-                <strong>{groupMeta[item.category].title}</strong>
+                <span>rankGap</span>
+                <strong>{formatNumber(item.schoolReachability.rankGap)}</strong>
               </div>
               <div>
-                <span>数据状态</span>
-                <strong>{dataModeLabel(item.dataMode)}</strong>
+                <span>风险等级</span>
+                <strong>{riskLevelLabel(item.riskLevel)}</strong>
               </div>
             </div>
 
             <section className="detail-section">
               <h3>
                 <Building2 size={18} />
-                学校预览
+                学校画像
               </h3>
               <p>{item.schoolProfile.summary}</p>
               <div className="profile-facts">
@@ -363,7 +955,7 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
             <section className="detail-section">
               <h3>
                 <ChartNoAxesColumnIncreasing size={18} />
-                概率拆解
+                可达概率与趋势
               </h3>
               <p>{item.probabilityExplanation.narrative}</p>
               <div className="probability-breakdown">
@@ -374,17 +966,6 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
                   </div>
                 ))}
               </div>
-              <div className="insight-note">
-                gap {item.probabilityExplanation.gap.toLocaleString("zh-CN")} · z {item.probabilityExplanation.z} ·{" "}
-                {item.probabilityExplanation.formula}
-              </div>
-            </section>
-
-            <section className="detail-section">
-              <h3>
-                <FileText size={18} />
-                录取证据与趋势
-              </h3>
               <div className="trend-grid">
                 <div>
                   <span>最新年份</span>
@@ -400,6 +981,58 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
                 </div>
               </div>
               <p>{item.admissionTrend.summary}</p>
+              <div className="insight-note">
+                gap {formatNumber(item.schoolReachability.rankGap)} · z {item.schoolReachability.zScore} ·{" "}
+                {item.probabilityExplanation.formula}
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <h3>
+                <BookOpen size={18} />
+                该校可选专业
+              </h3>
+              <div className="eligible-major-list">
+                {item.eligibleMajors.map((major) => {
+                  const key = buildSelectedMajorKey(item.schoolId, major.majorName);
+                  const selected = selectedMajorKeys.includes(key);
+                  return (
+                    <article className={`eligible-major-card ${selected ? "is-selected" : ""}`} key={major.majorName}>
+                      <div className="major-card-head">
+                        <div>
+                          <strong>{major.majorName}</strong>
+                          <span>
+                            {heatLabel(major.heatLevel)} · 匹配 {cnPercent(major.fitProbability)}
+                          </span>
+                        </div>
+                        <button type="button" onClick={() => onToggleMajor(item.schoolId, major.majorName)}>
+                          {selected ? "取消专业" : "选择专业"}
+                        </button>
+                      </div>
+                      <p>{major.plainLanguage}</p>
+                      <div className="career-summary">
+                        <BriefcaseBusiness size={15} />
+                        <span>{major.careerSummary}</span>
+                      </div>
+                      <div className="major-risk">
+                        <span>风险提醒</span>
+                        <p>{major.risk}</p>
+                      </div>
+                      <div className="source-row">
+                        <span className={`source-chip ${major.dataMode}`}>{dataModeLabel(major.dataMode)}</span>
+                        {major.rankGap !== undefined && <span>专业 rankGap {formatNumber(major.rankGap)}</span>}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="detail-section">
+              <h3>
+                <FileText size={18} />
+                录取证据与来源
+              </h3>
               <ul className="evidence-list">
                 {item.evidence.map((line) => (
                   <li key={line}>{line}</li>
@@ -418,81 +1051,12 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
 
             <section className="detail-section">
               <h3>
-                <BookOpen size={18} />
-                推荐与风险说明
+                <Compass size={18} />
+                决策提醒
               </h3>
-              <p>{item.reason}</p>
               <p>{item.risk}</p>
               <div className="insight-note">
                 替代学校：{item.alternative.schoolName}，参考概率 {cnPercent(item.alternative.probability)}。
-              </div>
-            </section>
-
-            <section className="detail-section">
-              <h3>
-                <BriefcaseBusiness size={18} />
-                专业就业方向
-              </h3>
-              <p>{item.careerGuide.overview}</p>
-              <div className="detail-columns">
-                <div>
-                  <span>核心课程</span>
-                  <ul>
-                    {item.careerGuide.coreCourses.map((course) => (
-                      <li key={course}>{course}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <span>适合学生</span>
-                  <ul>
-                    {item.careerGuide.suitableStudents.map((trait) => (
-                      <li key={trait}>{trait}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-              <div className="detail-columns">
-                <div>
-                  <span>方向</span>
-                  <ul>
-                    {item.careerGuide.directions.map((direction) => (
-                      <li key={direction}>{direction}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <span>职业选择</span>
-                  <ul>
-                    {item.careerGuide.roles.map((role) => (
-                      <li key={role}>{role}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-              <p>{item.careerGuide.industryOutlook}</p>
-              <div className="detail-columns">
-                <div>
-                  <span>考研方向</span>
-                  <ul>
-                    {item.careerGuide.graduateDirections.map((direction) => (
-                      <li key={direction}>{direction}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <span>风险提醒</span>
-                  <p>{item.careerGuide.riskReminder}</p>
-                </div>
-              </div>
-              <div className="skill-row">
-                {item.careerGuide.skillFocus.map((skill) => (
-                  <span key={skill}>{skill}</span>
-                ))}
-              </div>
-              <div className="career-path">
-                <Compass size={16} />
-                <p>{item.careerGuide.longTermPath}</p>
               </div>
             </section>
           </motion.aside>
@@ -502,72 +1066,144 @@ function DetailDrawer({ item, onClose }: { item: Recommendation | null; onClose:
   );
 }
 
-function ThoughtPanel({ isGenerating, stepIndex }: { isGenerating: boolean; stepIndex: number }) {
+function PlanPanel({
+  plan,
+  requestMode,
+  selectedSchoolCount,
+  selectedMajorCount,
+  onGenerate,
+  error
+}: {
+  plan: VolunteerPlanResponse | null;
+  requestMode: RequestMode;
+  selectedSchoolCount: number;
+  selectedMajorCount: number;
+  onGenerate: () => void;
+  error: string;
+}) {
+  const groupedPlan = useMemo(
+    () =>
+      (plan?.items ?? []).reduce<Record<GroupKey, VolunteerPlanItem[]>>(
+        (groups, item) => {
+          groups[item.slotCategory].push(item);
+          return groups;
+        },
+        { reach: [], match: [], safety: [] }
+      ),
+    [plan]
+  );
+  const isPlanning = requestMode === "plan";
+
   return (
-    <div className="thought-panel">
-      <div className="thought-core">
-        <div className={`thinking-mark ${isGenerating ? "is-thinking" : ""}`}>
-          <BrainCircuit size={20} />
-        </div>
+    <section className="plan-panel">
+      <div className="plan-head">
         <div>
-          <span>AI Decision Engine</span>
-          <strong>{isGenerating ? thoughtSteps[stepIndex] : "等待生成志愿方案"}</strong>
+          <span>Volunteer Plan</span>
+          <h3>生成 6/6/4 志愿表</h3>
+          <p>
+            已选 {selectedSchoolCount} 所学校 · {selectedMajorCount} 个校内专业
+          </p>
         </div>
+        <button className="secondary-action" type="button" onClick={onGenerate} disabled={isPlanning}>
+          <ClipboardList size={17} />
+          <span>{isPlanning ? "生成中" : "生成 6/6/4 志愿表"}</span>
+        </button>
       </div>
-      <div className="thought-steps">
-        {thoughtSteps.map((step, index) => (
-          <span className={index <= stepIndex && isGenerating ? "is-active" : ""} key={step}>
-            {step}
-          </span>
-        ))}
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {isPlanning && (
+        <div className="plan-skeleton">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div className="skeleton-card compact" key={index} />
+          ))}
+        </div>
+      )}
+
+      {plan && !isPlanning && (
+        <div className="volunteer-plan">
+          <div className="plan-summary">
+            <span>
+              冲 {plan.summary.reach} · 稳 {plan.summary.match} · 保 {plan.summary.safety}
+            </span>
+            <p>{plan.dataNotice}</p>
+          </div>
+          {(Object.keys(groupMeta) as GroupKey[]).map((key) => (
+            <section className="plan-group" key={key}>
+              <div className="plan-group-title">
+                <strong>
+                  {groupMeta[key].title} · {groupedPlan[key].length}
+                </strong>
+                <span>{groupMeta[key].count} 条目标配额</span>
+              </div>
+              <div className="plan-list">
+                {groupedPlan[key].map((item) => (
+                  <PlanCard item={item} key={item.id} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PlanCard({ item }: { item: VolunteerPlanItem }) {
+  return (
+    <article className={`plan-card ${item.slotCategory}`}>
+      <div className="plan-card-top">
+        <span>{groupMeta[item.slotCategory].shortTitle}</span>
+        <strong>{cnPercent(item.probability)}</strong>
       </div>
-    </div>
+      <div className="plan-model-badge">真实概率梯度 · {groupMeta[item.category].title}</div>
+      <h4>{item.schoolName}</h4>
+      <p className="plan-major">{item.majorName}</p>
+      <p>{item.reason}</p>
+      <div className="major-risk">
+        <span>风险</span>
+        <p>{item.risk}</p>
+      </div>
+      <div className="alternative-row">
+        <span>替代学校</span>
+        <strong>{item.alternativeSchoolName}</strong>
+      </div>
+    </article>
   );
 }
 
 export function App() {
   const [booting, setBooting] = useState(true);
   const [form, setForm] = useState<FormState>(initialForm);
-  const [results, setResults] = useState<RecommendResponse | null>(null);
+  const [schoolPool, setSchoolPool] = useState<ReachableSchoolsResponse | null>(null);
+  const [plan, setPlan] = useState<VolunteerPlanResponse | null>(null);
   const [activeGroup, setActiveGroup] = useState<GroupKey>("reach");
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [requestMode, setRequestMode] = useState<RequestMode>(null);
   const [thoughtStep, setThoughtStep] = useState(0);
-  const [error, setError] = useState("");
+  const [schoolError, setSchoolError] = useState("");
+  const [planError, setPlanError] = useState("");
   const [majorQuery, setMajorQuery] = useState("");
-  const [selectedRecommendation, setSelectedRecommendation] = useState<Recommendation | null>(null);
+  const [selectedSchool, setSelectedSchool] = useState<SchoolPoolItem | null>(null);
+  const [selectedSchoolIds, setSelectedSchoolIds] = useState<number[]>([]);
+  const [selectedMajorKeys, setSelectedMajorKeys] = useState<string[]>([]);
 
   useEffect(() => {
     const id = window.setTimeout(() => setBooting(false), 760);
     return () => window.clearTimeout(id);
   }, []);
 
-  const activeItems = useMemo(() => results?.[activeGroup] ?? [], [activeGroup, results]);
-  const allResults = useMemo(() => (results ? [...results.reach, ...results.match, ...results.safety] : []), [results]);
-  const resultOverview = useMemo(() => {
-    const countBy = <Key extends string>(items: Recommendation[], getKey: (item: Recommendation) => Key) =>
-      items.reduce<Record<Key, number>>((acc, item) => {
-        const key = getKey(item);
-        acc[key] = (acc[key] ?? 0) + 1;
-        return acc;
-      }, {} as Record<Key, number>);
-    const latestYear = allResults.reduce<number | null>(
-      (latest, item) => (latest === null ? item.admissionTrend.latestYear : Math.max(latest, item.admissionTrend.latestYear)),
-      null
-    );
-    return {
-      total: allResults.length,
-      byMode: countBy(allResults, (item) => item.dataMode),
-      byRisk: countBy(allResults, (item) => item.riskLevel),
-      topCities: Object.entries(countBy(allResults, (item) => item.city)).slice(0, 4),
-      topMajors: Object.entries(countBy(allResults, (item) => item.major)).slice(0, 4),
-      latestYear
-    };
-  }, [allResults]);
+  const groupedSchools = useMemo(() => groupReachableSchools(schoolPool?.items ?? []), [schoolPool]);
+  const activeItems = useMemo(() => groupedSchools[activeGroup], [activeGroup, groupedSchools]);
+  const cockpitSignals = useMemo(
+    () => buildCockpitSignals(schoolPool, selectedSchoolIds.length, selectedMajorKeys.length, plan),
+    [schoolPool, selectedSchoolIds.length, selectedMajorKeys.length, plan]
+  );
   const filteredMajorOptions = useMemo(() => {
     const query = majorQuery.trim().toLowerCase();
     if (!query) return majorOptions;
     return majorOptions.filter((major) => major.toLowerCase().includes(query));
   }, [majorQuery]);
+  const selectedMajorNames = useMemo(() => deriveSelectedMajorNames(selectedMajorKeys), [selectedMajorKeys]);
 
   function updateForm<Key extends keyof FormState>(key: Key, value: FormState[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -582,58 +1218,119 @@ export function App() {
       if (key === "preferredCities" && values.includes("全国")) {
         return { ...current, [key]: [value] };
       }
-      const next = values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
-      return { ...current, [key]: next };
+      return { ...current, [key]: toggleUniqueSelection(values, value) };
     });
+  }
+
+  function toggleSchoolSelection(schoolId: number) {
+    setSelectedSchoolIds((current) => {
+      const isSelected = current.includes(schoolId);
+      if (isSelected) {
+        setSelectedMajorKeys((majorKeys) => removeSelectedMajorsForSchool(majorKeys, schoolId));
+      }
+      return toggleUniqueSelection(current, schoolId);
+    });
+  }
+
+  function toggleMajorSelection(schoolId: number, majorName: string) {
+    const key = buildSelectedMajorKey(schoolId, majorName);
+    setSelectedMajorKeys((current) => toggleUniqueSelection(current, key));
+    if (!selectedMajorKeys.includes(key)) {
+      setSelectedSchoolIds((current) => (current.includes(schoolId) ? current : [...current, schoolId]));
+    }
+  }
+
+  function resetAll() {
+    setForm(initialForm);
+    setSchoolPool(null);
+    setPlan(null);
+    setSelectedSchool(null);
+    setSelectedSchoolIds([]);
+    setSelectedMajorKeys([]);
+    setSchoolError("");
+    setPlanError("");
+    setActiveGroup("reach");
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError("");
-    setResults(null);
-    setSelectedRecommendation(null);
+    setSchoolError("");
+    setPlanError("");
+    setSchoolPool(null);
+    setPlan(null);
+    setSelectedSchool(null);
+    setSelectedSchoolIds([]);
+    setSelectedMajorKeys([]);
     setActiveGroup("reach");
-    setIsGenerating(true);
+    setRequestMode("schools");
     setThoughtStep(0);
 
     const stepTimers = [
-      window.setTimeout(() => setThoughtStep(1), 620),
-      window.setTimeout(() => setThoughtStep(2), 1220)
+      window.setTimeout(() => setThoughtStep(1), 560),
+      window.setTimeout(() => setThoughtStep(2), 1120)
     ];
 
     try {
-      const payload = {
-        score: form.score ? Number(form.score) : undefined,
-        rank: form.rank ? Number(form.rank) : undefined,
-        province: form.province,
-        subject: form.subject,
-        cityPreference: form.cityPreference,
-        preferredCities: form.preferredCities,
-        majors: form.majors,
-        riskPreference: form.riskPreference
-      };
-
       const [response] = await Promise.all([
-        fetch("/recommend", {
+        fetch("/schools/reachable", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(buildProfilePayload(form))
         }),
-        wait(1600)
+        wait(1500)
       ]);
 
       if (!response.ok) {
-        throw new Error("请求参数未通过校验");
+        throw new Error(await readErrorMessage(response, "学校池请求参数未通过校验"));
       }
 
-      const data = (await response.json()) as RecommendResponse;
-      setResults(data);
+      const data = (await response.json()) as ReachableSchoolsResponse;
+      setSchoolPool(data);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "生成失败，请稍后重试");
+      setSchoolError(requestError instanceof Error ? requestError.message : "生成学校池失败，请稍后重试");
     } finally {
       stepTimers.forEach((timer) => window.clearTimeout(timer));
       setThoughtStep(2);
-      window.setTimeout(() => setIsGenerating(false), 380);
+      window.setTimeout(() => setRequestMode(null), 340);
+    }
+  }
+
+  async function generatePlan() {
+    setPlanError("");
+    setRequestMode("plan");
+    setThoughtStep(0);
+
+    const stepTimers = [
+      window.setTimeout(() => setThoughtStep(1), 520),
+      window.setTimeout(() => setThoughtStep(2), 1040)
+    ];
+
+    try {
+      const [response] = await Promise.all([
+        fetch("/plans/volunteer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...buildProfilePayload(form),
+            selectedSchoolIds,
+            selectedMajors: selectedMajorNames
+          })
+        }),
+        wait(1320)
+      ]);
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response, "志愿表请求参数未通过校验"));
+      }
+
+      const data = (await response.json()) as VolunteerPlanResponse;
+      setPlan(data);
+    } catch (requestError) {
+      setPlanError(requestError instanceof Error ? requestError.message : "生成志愿表失败，请稍后重试");
+    } finally {
+      stepTimers.forEach((timer) => window.clearTimeout(timer));
+      setThoughtStep(2);
+      window.setTimeout(() => setRequestMode(null), 320);
     }
   }
 
@@ -648,11 +1345,11 @@ export function App() {
             <Sparkles size={15} />
             Gaokao Decision AI
           </span>
-          <h1>高考志愿 AI 推荐系统</h1>
+          <h1>先看学校，再定专业</h1>
         </div>
         <div className="header-metrics">
-          <span>规则模型</span>
-          <strong>gap / z / sigmoid</strong>
+          <span>School-first</span>
+          <strong>学校池 · 校内专业 · 6/6/4</strong>
         </div>
       </section>
 
@@ -660,9 +1357,10 @@ export function App() {
         <div>
           <Database size={20} />
           <div>
-            <span>Real Data Readiness</span>
+            <span>Data Readiness</span>
             <p>
-              当前内置为来源可追踪的示例结构。正式填报必须导入各省教育考试院、阳光高考、学校招生网等权威数据，缺失数据不会伪装成真实结果。
+              {schoolPool?.dataNotice ??
+                "当前流程会先生成学校可达池，再进入校内专业解释与志愿表。样例数据会明确标注，正式填报必须复核各省考试院、阳光高考和学校招生网。"}
             </p>
           </div>
         </div>
@@ -672,14 +1370,24 @@ export function App() {
         </a>
       </section>
 
+      <FlowSteps
+        hasPool={Boolean(schoolPool)}
+        hasSelection={selectedSchoolIds.length > 0 || selectedMajorKeys.length > 0}
+        hasPlan={Boolean(plan)}
+        requestMode={requestMode}
+      />
+
+      <DecisionCockpit signals={cockpitSignals} requestMode={requestMode} />
+
       <section className="hero-grid">
         <form className="panel control-panel" onSubmit={submit}>
           <div className="panel-heading">
             <div>
               <span>Student Profile</span>
               <h2>输入画像</h2>
+              <p className="panel-subtitle">专业偏好可以先留空，先看可达学校，再看每所学校里能选什么专业。</p>
             </div>
-            <button className="ghost-icon" type="button" onClick={() => setForm(initialForm)} aria-label="恢复示例">
+            <button className="ghost-icon" type="button" onClick={resetAll} aria-label="恢复示例">
               <RefreshCw size={18} />
             </button>
           </div>
@@ -762,15 +1470,17 @@ export function App() {
           </div>
 
           <div className="field">
-            <span>专业偏好 · 全国专业库 {majorOptions.length}</span>
+            <span>专业偏好 · 可选填 {majorOptions.length}</span>
             <input
               className="mini-search"
               value={majorQuery}
               onChange={(event) => setMajorQuery(event.target.value)}
-              placeholder="搜索专业，如 法学、临床医学、机械"
+              placeholder="可留空；也可搜索法学、临床医学、机械"
             />
             <div className="selected-major-strip">
-              {form.majors.length === 0 ? "未选择专业" : `已选 ${form.majors.length} 个：${form.majors.slice(0, 4).join("、")}`}
+              {form.majors.length === 0
+                ? "未选择专业：将先按学校可达性生成学校池"
+                : `已选 ${form.majors.length} 个：${form.majors.slice(0, 4).join("、")}`}
             </div>
             <div className="tag-cloud scroll-cloud major-cloud">
               {filteredMajorOptions.map((major) => (
@@ -802,11 +1512,11 @@ export function App() {
             </div>
           </div>
 
-          {error && <div className="error-banner">{error}</div>}
+          {schoolError && <div className="error-banner">{schoolError}</div>}
 
-          <button className="primary-action" type="submit" disabled={isGenerating || form.majors.length === 0}>
+          <button className="primary-action" type="submit" disabled={requestMode !== null}>
             <Search size={18} />
-            <span>{isGenerating ? "生成中" : "生成志愿方案"}</span>
+            <span>{requestMode === "schools" ? "生成中" : "生成学校池"}</span>
             <ArrowRight size={18} />
           </button>
         </form>
@@ -814,49 +1524,29 @@ export function App() {
         <section className="panel result-panel">
           <div className="panel-heading results-heading">
             <div>
-              <span>Recommendation Matrix</span>
-              <h2>志愿方案</h2>
+              <span>School Pool</span>
+              <h2>学校可达梯度</h2>
             </div>
             <div className="matrix-count">
               <Layers3 size={18} />
-              6 · 6 · 4
+              冲 6 · 稳 6 · 保 4
             </div>
           </div>
 
-          <ThoughtPanel isGenerating={isGenerating} stepIndex={thoughtStep} />
+          <ThoughtPanel
+            requestMode={requestMode}
+            stepIndex={thoughtStep}
+            hasPool={Boolean(schoolPool)}
+            hasPlan={Boolean(plan)}
+          />
 
-          {results && (
-            <div className="overview-grid">
-              <div>
-                <span>总推荐</span>
-                <strong>{resultOverview.total}</strong>
-                <p>冲刺 / 稳妥 / 保底</p>
-              </div>
-              <div>
-                <span>数据状态</span>
-                <strong>{Object.entries(resultOverview.byMode).map(([mode, count]) => `${dataModeLabel(mode as Recommendation["dataMode"])} ${count}`).join(" · ")}</strong>
-                <p>缺少权威导入时仅作结构演示</p>
-              </div>
-              <div>
-                <span>风险分布</span>
-                <strong>
-                  高 {resultOverview.byRisk.high ?? 0} · 中 {resultOverview.byRisk.medium ?? 0} · 低 {resultOverview.byRisk.low ?? 0}
-                </strong>
-                <p>由概率区间与梯度共同判定</p>
-              </div>
-              <div>
-                <span>最新年份</span>
-                <strong>{resultOverview.latestYear ?? "-"}</strong>
-                <p>{resultOverview.topCities.map(([city, count]) => `${city}${count}`).join(" / ")}</p>
-              </div>
-            </div>
-          )}
+          {schoolPool && <SchoolPoolOverview pool={schoolPool} />}
 
-          <div className="group-tabs" role="tablist" aria-label="志愿分组">
+          <div className="group-tabs" role="tablist" aria-label="学校可达梯度">
             {(Object.keys(groupMeta) as GroupKey[]).map((key) => {
               const meta = groupMeta[key];
               const Icon = meta.icon;
-              const total = results?.[key].length ?? Number(meta.count);
+              const total = groupedSchools[key].length || Number(meta.count);
               return (
                 <button
                   className={activeGroup === key ? `is-active ${meta.tone}` : meta.tone}
@@ -874,17 +1564,17 @@ export function App() {
           </div>
 
           <div className="result-stage">
-            {!results && !isGenerating && (
+            {!schoolPool && requestMode !== "schools" && (
               <div className="empty-state">
                 <div className="empty-icon">
                   <BrainCircuit size={28} />
                 </div>
-                <h3>等待输入完成</h3>
-                <p>提交后将生成冲刺、稳妥、保底三套院校梯度。</p>
+                <h3>先生成学校池</h3>
+                <p>提交画像后，会先展示可能可达的学校，再进入每所学校的可选专业。</p>
               </div>
             )}
 
-            {isGenerating && !results && (
+            {requestMode === "schools" && !schoolPool && (
               <div className="progressive-skeleton">
                 {Array.from({ length: 6 }).map((_, index) => (
                   <motion.div
@@ -899,7 +1589,7 @@ export function App() {
             )}
 
             <AnimatePresence mode="wait">
-              {results && (
+              {schoolPool && (
                 <motion.div
                   className="recommendation-list"
                   key={activeGroup}
@@ -915,37 +1605,56 @@ export function App() {
                   }}
                 >
                   {activeItems.map((item, index) => (
-                    <RecommendationCard
+                    <SchoolCard
                       item={item}
                       index={index}
                       key={`${activeGroup}-${item.schoolId}`}
-                      onOpen={setSelectedRecommendation}
+                      onOpen={setSelectedSchool}
+                      isSelected={selectedSchoolIds.includes(item.schoolId)}
                     />
                   ))}
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
+
+          {schoolPool && (
+            <PlanPanel
+              plan={plan}
+              requestMode={requestMode}
+              selectedSchoolCount={selectedSchoolIds.length}
+              selectedMajorCount={selectedMajorKeys.length}
+              onGenerate={generatePlan}
+              error={planError}
+            />
+          )}
         </section>
       </section>
 
       <section className="insight-strip" aria-label="模型参数">
         <div>
-          <span>Probability</span>
-          <strong>1 / (1 + exp(-k · z))</strong>
+          <span>Step 1</span>
+          <strong>画像输入</strong>
         </div>
         <ChevronRight size={18} />
         <div>
-          <span>Gap</span>
-          <strong>student_rank - school_avg_rank</strong>
+          <span>Step 2</span>
+          <strong>学校可达池</strong>
         </div>
         <ChevronRight size={18} />
         <div>
-          <span>Factors</span>
-          <strong>major · city · trend · risk</strong>
+          <span>Step 3</span>
+          <strong>校内专业与志愿表</strong>
         </div>
       </section>
-      <DetailDrawer item={selectedRecommendation} onClose={() => setSelectedRecommendation(null)} />
+      <DetailDrawer
+        item={selectedSchool}
+        selectedSchoolIds={selectedSchoolIds}
+        selectedMajorKeys={selectedMajorKeys}
+        onToggleSchool={toggleSchoolSelection}
+        onToggleMajor={toggleMajorSelection}
+        onClose={() => setSelectedSchool(null)}
+      />
     </main>
   );
 }
