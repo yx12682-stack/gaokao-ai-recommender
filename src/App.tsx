@@ -24,7 +24,7 @@ import {
   TrendingUp,
   X
 } from "lucide-react";
-import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   cityOptions,
   majorOptions,
@@ -35,48 +35,20 @@ import {
   type SubjectType,
   type VolunteerPlanResponse
 } from "./shared/recommendation";
+import {
+  buildDecisionExperience,
+  type CockpitCardSignal,
+  type CockpitSignalLane,
+  type CockpitSignals,
+  type DecisionExperience,
+  type DecisionOrbitItem,
+  type GroupKey,
+  type OutcomeNebula as OutcomeNebulaState
+} from "./shared/decision-experience";
 
-type GroupKey = "reach" | "match" | "safety";
 type RequestMode = "schools" | "plan" | null;
 type SchoolPoolItem = ReachableSchoolsResponse["items"][number];
 type VolunteerPlanItem = VolunteerPlanResponse["items"][number];
-type CockpitPhase = "idle" | "school_pool" | "volunteer_plan";
-type CockpitTone = "idle" | "accent" | "success" | "warning" | GroupKey;
-
-interface CockpitCardSignal {
-  key: "candidateSchools" | "selection" | "dataConfidence" | "volunteerPlan";
-  label: string;
-  value: string;
-  detail: string;
-  tone: CockpitTone;
-}
-
-interface CockpitDistributionItem {
-  label: string;
-  value: number;
-  share: number;
-  detail?: string;
-  tone?: CockpitTone;
-}
-
-interface CockpitSignalLane {
-  key: "riskGradient" | "cityDistribution" | "majorDistribution" | "historySignal";
-  title: string;
-  summary: string;
-  emptyText: string;
-  items: CockpitDistributionItem[];
-}
-
-interface CockpitSignals {
-  phase: CockpitPhase;
-  statusLabel: string;
-  statusDetail: string;
-  cards: CockpitCardSignal[];
-  riskGradient: CockpitSignalLane;
-  cityDistribution: CockpitSignalLane;
-  majorDistribution: CockpitSignalLane;
-  historySignal: CockpitSignalLane;
-}
 
 interface FormState {
   score: string;
@@ -219,158 +191,6 @@ export function deriveSelectedMajorNames(keys: string[]) {
   return [...new Set(keys.map((key) => readSelectedMajorKey(key).majorName).filter(Boolean))];
 }
 
-function shareOf(value: number, total: number) {
-  if (total <= 0) return 0;
-  return Math.round((value / total) * 100);
-}
-
-function topCountItems(counts: Record<string, number>, limit = 4): CockpitDistributionItem[] {
-  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-  return Object.entries(counts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([label, value]) => ({
-      label,
-      value,
-      share: shareOf(value, total)
-    }));
-}
-
-function dataConfidenceTone(mode: Recommendation["dataMode"] | undefined): CockpitTone {
-  if (mode === "verified") return "success";
-  if (mode === "partial") return "accent";
-  if (mode === "sample") return "warning";
-  return "idle";
-}
-
-export function buildCockpitSignals(
-  pool: ReachableSchoolsResponse | null,
-  selectedSchoolCount: number,
-  selectedMajorCount: number,
-  plan: VolunteerPlanResponse | null
-): CockpitSignals {
-  const phase: CockpitPhase = plan ? "volunteer_plan" : pool ? "school_pool" : "idle";
-  const summary = plan?.summary ?? pool?.summary ?? null;
-  const candidateTotal = pool?.summary.total ?? pool?.items.length ?? 0;
-  const dataMode = summary?.dataMode;
-  const dataNotice = plan?.dataNotice ?? pool?.dataNotice ?? "提交画像后显示数据可信状态。";
-
-  const gradientTotal = summary ? summary.reach + summary.match + summary.safety : 0;
-  const riskGradientItems: CockpitDistributionItem[] = summary
-    ? [
-        { label: "冲刺", value: summary.reach, share: shareOf(summary.reach, gradientTotal), tone: "reach" },
-        { label: "稳妥", value: summary.match, share: shareOf(summary.match, gradientTotal), tone: "match" },
-        { label: "保底", value: summary.safety, share: shareOf(summary.safety, gradientTotal), tone: "safety" }
-      ]
-    : [];
-
-  const cityCounts = (pool?.items ?? []).reduce<Record<string, number>>((counts, item) => {
-    counts[item.city] = (counts[item.city] ?? 0) + 1;
-    return counts;
-  }, {});
-
-  const majorCounts = plan
-    ? plan.items.reduce<Record<string, number>>((counts, item) => {
-        counts[item.majorName] = (counts[item.majorName] ?? 0) + 1;
-        return counts;
-      }, {})
-    : (pool?.items ?? []).reduce<Record<string, number>>((counts, item) => {
-        item.eligibleMajors.slice(0, 3).forEach((major) => {
-          counts[major.majorName] = (counts[major.majorName] ?? 0) + 1;
-        });
-        return counts;
-      }, {});
-
-  const cohortPairs = pool?.cohortOutcomes.schoolMajorPairs ?? [];
-  const historyItems = cohortPairs.slice(0, 4).map((pair) => {
-    const value = Math.round(pair.share * 100);
-    return {
-      label: `${pair.schoolName} · ${pair.majorName}`,
-      value,
-      share: value,
-      detail: `${pair.city} · ${pair.latestYear}`
-    };
-  });
-
-  return {
-    phase,
-    statusLabel:
-      phase === "volunteer_plan" ? "志愿表已生成" : phase === "school_pool" ? "学校池已就绪" : "等待画像输入",
-    statusDetail:
-      phase === "volunteer_plan"
-        ? "正在基于学校池、校内专业与 6/6/4 梯度呈现最终志愿结构。"
-        : phase === "school_pool"
-          ? "可继续打开学校详情，选择学校和校内专业。"
-          : "提交分数、位次与偏好后，将生成学校优先的决策信号。",
-    cards: [
-      {
-        key: "candidateSchools",
-        label: "候选学校",
-        value: formatNumber(candidateTotal),
-        detail: pool ? `冲 ${pool.summary.reach} · 稳 ${pool.summary.match} · 保 ${pool.summary.safety}` : "生成后显示学校池规模",
-        tone: pool ? "accent" : "idle"
-      },
-      {
-        key: "selection",
-        label: "已选学校 / 专业",
-        value: `${selectedSchoolCount} 所 / ${selectedMajorCount} 专业`,
-        detail: selectedSchoolCount > 0 || selectedMajorCount > 0 ? "用于生成志愿表的显式偏好" : "可在学校详情中选择",
-        tone: selectedSchoolCount > 0 || selectedMajorCount > 0 ? "success" : "idle"
-      },
-      {
-        key: "dataConfidence",
-        label: "数据可信状态",
-        value: dataMode ? dataModeLabel(dataMode) : "等待数据",
-        detail: dataNotice,
-        tone: dataConfidenceTone(dataMode)
-      },
-      {
-        key: "volunteerPlan",
-        label: "志愿表结构",
-        value: plan ? `${plan.summary.reach} / ${plan.summary.match} / ${plan.summary.safety}` : pool ? "待生成" : "未开始",
-        detail: plan ? "已输出冲稳保志愿表" : pool ? "选择学校和专业后生成" : "学校池生成后开启",
-        tone: plan ? "success" : pool ? "warning" : "idle"
-      }
-    ],
-    riskGradient: {
-      key: "riskGradient",
-      title: "风险梯度",
-      summary: summary ? `冲 ${summary.reach} · 稳 ${summary.match} · 保 ${summary.safety}` : "暂无风险梯度",
-      emptyText: "等待学校池生成",
-      items: riskGradientItems
-    },
-    cityDistribution: {
-      key: "cityDistribution",
-      title: "城市分布",
-      summary: Object.keys(cityCounts).length > 0 ? `${Object.keys(cityCounts).length} 个城市进入候选池` : "暂无城市分布",
-      emptyText: "生成学校池后显示城市分布",
-      items: topCountItems(cityCounts)
-    },
-    majorDistribution: {
-      key: "majorDistribution",
-      title: plan ? "计划专业分布" : "专业方向分布",
-      summary:
-        Object.keys(majorCounts).length > 0
-          ? `${Object.keys(majorCounts).length} 个专业方向`
-          : plan
-            ? "暂无计划专业"
-            : "暂无专业方向",
-      emptyText: plan ? "志愿表暂无专业" : "生成学校池后显示专业方向",
-      items: topCountItems(majorCounts)
-    },
-    historySignal: {
-      key: "historySignal",
-      title: "历史去向信号",
-      summary:
-        historyItems.length > 0
-          ? `${historyItems.length} 条相似去向`
-          : pool?.cohortOutcomes.missingReason ?? "等待相似位次去向",
-      emptyText: pool?.cohortOutcomes.missingReason ?? "等待相似位次去向",
-      items: historyItems
-    }
-  };
-}
-
 function buildProfilePayload(form: FormState) {
   return {
     score: form.score ? Number(form.score) : undefined,
@@ -439,6 +259,45 @@ function ToggleTag({
       {selected && <CheckCircle2 size={14} strokeWidth={2.4} />}
       <span>{children}</span>
     </button>
+  );
+}
+
+function MajorGuideGateway({
+  selectedMajors,
+  onPick
+}: {
+  selectedMajors: string[];
+  onPick: (major: string) => void;
+}) {
+  const gatewayMajors = ["计算机科学与技术", "临床医学", "法学", "机械设计制造及其自动化"].filter((major) =>
+    majorOptions.includes(major)
+  );
+
+  return (
+    <div className="major-gateway">
+      <div className="major-gateway-head">
+        <div className="major-gateway-icon">
+          <BookOpen size={17} />
+        </div>
+        <div>
+          <span>National Major Index</span>
+          <strong>全国专业解释库</strong>
+        </div>
+        <em>{majorOptions.length} 个方向</em>
+      </div>
+      <div className="major-gateway-actions">
+        {gatewayMajors.map((major) => (
+          <button
+            className={selectedMajors.includes(major) ? "is-selected" : ""}
+            type="button"
+            key={major}
+            onClick={() => onPick(major)}
+          >
+            {major}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -660,6 +519,189 @@ function DecisionCockpit({ signals, requestMode }: { signals: CockpitSignals; re
   );
 }
 
+function orbitStyle(item: DecisionOrbitItem): CSSProperties {
+  return {
+    "--angle": `${item.angle}deg`,
+    "--counter-angle": `${-item.angle}deg`,
+    "--radius": `${item.radius * 2.08}px`,
+    "--node-size": `${item.size + 22}px`,
+    "--z": item.zIndex
+  } as CSSProperties;
+}
+
+function nebulaStyle(node: OutcomeNebulaState["nodes"][number]): CSSProperties {
+  return {
+    "--angle": `${node.angle}deg`,
+    "--counter-angle": `${-node.angle}deg`,
+    "--radius": `${node.radius * 1.86}px`
+  } as CSSProperties;
+}
+
+function DecisionUniverseHero({
+  experience,
+  pool,
+  selectedSchoolCount,
+  selectedMajorCount,
+  requestMode,
+  onOpen
+}: {
+  experience: DecisionExperience;
+  pool: ReachableSchoolsResponse | null;
+  selectedSchoolCount: number;
+  selectedMajorCount: number;
+  requestMode: RequestMode;
+  onOpen: (item: SchoolPoolItem) => void;
+}) {
+  const schoolById = useMemo(
+    () => new Map((pool?.items ?? []).map((item) => [item.schoolId, item] as const)),
+    [pool]
+  );
+  const phaseLabel: Record<DecisionExperience["phase"], string> = {
+    profile: "画像输入",
+    school_pool: "学校池",
+    major_selection: "校内专业",
+    volunteer_plan: "志愿表"
+  };
+  const isAnalyzing = requestMode !== null;
+
+  return (
+    <motion.section
+      className={`decision-universe phase-${experience.phase} ${isAnalyzing ? "is-analyzing" : ""}`}
+      aria-label="学校优先决策层"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <div className="universe-copy">
+        <span className="eyebrow">
+          <Layers3 size={15} />
+          Decision Layer
+        </span>
+        <h2>学校宇宙</h2>
+        <p>{experience.cockpit.statusDetail}</p>
+        <div className="universe-metrics">
+          <div>
+            <span>当前阶段</span>
+            <strong>{phaseLabel[experience.phase]}</strong>
+          </div>
+          <div>
+            <span>候选学校</span>
+            <strong>{pool?.summary.total ?? 0}</strong>
+          </div>
+          <div>
+            <span>已选学校 / 专业</span>
+            <strong>
+              {selectedSchoolCount} / {selectedMajorCount}
+            </strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="universe-stage" aria-label="学校池轨道">
+        <div className="universe-core">
+          <BrainCircuit size={23} />
+          <strong>{pool ? dataModeLabel(pool.summary.dataMode) : "等待画像"}</strong>
+          <span>{pool ? `冲 ${pool.summary.reach} · 稳 ${pool.summary.match} · 保 ${pool.summary.safety}` : "School first"}</span>
+        </div>
+        {experience.universe.layers.map((layer) => (
+          <div className={`orbit-ring ${layer.key}`} key={layer.key}>
+            <span>{layer.label}</span>
+            <em>{layer.count}</em>
+          </div>
+        ))}
+        {experience.universe.items.length === 0
+          ? Array.from({ length: 9 }).map((_, index) => (
+              <i
+                className="universe-ghost-node"
+                style={
+                  {
+                    "--angle": `${index * 40 - 90}deg`,
+                    "--counter-angle": `${-(index * 40 - 90)}deg`,
+                    "--radius": `${(38 + (index % 3) * 16) * 2.08}px`
+                  } as CSSProperties
+                }
+                key={index}
+              />
+            ))
+          : experience.universe.items.map((item) => {
+              const school = schoolById.get(item.schoolId);
+              return (
+                <button
+                  className={`universe-node ${item.category} risk-${item.riskLevel}`}
+                  style={orbitStyle(item)}
+                  type="button"
+                  key={item.id}
+                  onClick={() => school && onOpen(school)}
+                  aria-label={`查看 ${item.schoolName}`}
+                >
+                  <span>{item.percentage}</span>
+                  <em>{item.schoolName}</em>
+                </button>
+              );
+            })}
+      </div>
+
+      <div className="universe-layer-list">
+        {experience.universe.layers.map((layer) => (
+          <div className={layer.key} key={layer.key}>
+            <span>{layer.label}</span>
+            <strong>{layer.count}</strong>
+          </div>
+        ))}
+      </div>
+    </motion.section>
+  );
+}
+
+function OutcomeNebula({ nebula }: { nebula: OutcomeNebulaState }) {
+  return (
+    <section className={`outcome-nebula ${nebula.status}`} aria-label="相似位次聚合去向">
+      <div className="outcome-nebula-head">
+        <div>
+          <span>Similar Rank Outcomes</span>
+          <h3>{nebula.title}</h3>
+          <p>
+            {nebula.rankBandLabel} · {nebula.yearsLabel} · {dataModeLabel(nebula.dataMode)}
+          </p>
+        </div>
+        <strong>{nebula.nodes.length || "暂无"}</strong>
+      </div>
+
+      <div className="nebula-map">
+        <div className="nebula-core">
+          <Radar size={18} />
+          <span>聚合记录</span>
+        </div>
+        {nebula.status === "empty" ? (
+          <p className="nebula-empty">{nebula.emptyMessage}</p>
+        ) : (
+          nebula.nodes.map((node) => (
+            <article className={`nebula-node ${node.intensity}`} style={nebulaStyle(node)} key={node.id}>
+              <span>{node.percentage}</span>
+              <strong>{node.schoolName}</strong>
+              <em>{node.majorName}</em>
+              <small>
+                {node.intensityLabel} · {node.city}
+              </small>
+            </article>
+          ))
+        )}
+      </div>
+
+      <div className="nebula-evidence">
+        {nebula.nodes.slice(0, 4).map((node) => (
+          <div key={`${node.id}-evidence`}>
+            <span>{node.label}</span>
+            <strong>{node.percentage}</strong>
+            <em>{node.detail}</em>
+          </div>
+        ))}
+      </div>
+      <p className="privacy-note">{nebula.privacyNote}</p>
+    </section>
+  );
+}
+
 function DistributionChips({ items, emptyText }: { items: Array<[string, number]>; emptyText: string }) {
   if (items.length === 0) return <p>{emptyText}</p>;
   return (
@@ -674,7 +716,7 @@ function DistributionChips({ items, emptyText }: { items: Array<[string, number]
   );
 }
 
-function SchoolPoolOverview({ pool }: { pool: ReachableSchoolsResponse }) {
+function SchoolPoolOverview({ pool, nebula }: { pool: ReachableSchoolsResponse; nebula: OutcomeNebulaState }) {
   const overview = useMemo(() => {
     const countBy = <Key extends string>(items: SchoolPoolItem[], getKey: (item: SchoolPoolItem) => Key) =>
       items.reduce<Record<Key, number>>((acc, item) => {
@@ -698,8 +740,6 @@ function SchoolPoolOverview({ pool }: { pool: ReachableSchoolsResponse }) {
 
     return { risk, cities, majors };
   }, [pool]);
-
-  const cohortPairs = pool.cohortOutcomes.schoolMajorPairs.slice(0, 5);
 
   return (
     <div className="school-pool-overview">
@@ -733,35 +773,7 @@ function SchoolPoolOverview({ pool }: { pool: ReachableSchoolsResponse }) {
         </div>
       </div>
 
-      <section className="cohort-panel">
-        <div className="cohort-head">
-          <div>
-            <span>{pool.cohortOutcomes.label}</span>
-            <h3>
-              {formatNumber(pool.cohortOutcomes.rankBand.from)} - {formatNumber(pool.cohortOutcomes.rankBand.to)} 位次去向
-            </h3>
-          </div>
-          <strong>{dataModeLabel(pool.cohortOutcomes.dataMode)}</strong>
-        </div>
-        <div className="cohort-list">
-          {cohortPairs.length === 0 ? (
-            <p>{pool.cohortOutcomes.missingReason ?? "暂无相似位次去向样本"}</p>
-          ) : (
-            cohortPairs.map((pair) => (
-              <div className="cohort-row" key={`${pair.schoolName}-${pair.majorName}`}>
-                <div>
-                  <strong>{pair.schoolName}</strong>
-                  <span>
-                    {pair.majorName} · {pair.city} · {pair.latestYear}
-                  </span>
-                </div>
-                <em>{Math.round(pair.share * 100)}%</em>
-              </div>
-            ))
-          )}
-        </div>
-        <p className="privacy-note">{pool.cohortOutcomes.privacyNote}</p>
-      </section>
+      <OutcomeNebula nebula={nebula} />
     </div>
   );
 }
@@ -1194,10 +1206,17 @@ export function App() {
 
   const groupedSchools = useMemo(() => groupReachableSchools(schoolPool?.items ?? []), [schoolPool]);
   const activeItems = useMemo(() => groupedSchools[activeGroup], [activeGroup, groupedSchools]);
-  const cockpitSignals = useMemo(
-    () => buildCockpitSignals(schoolPool, selectedSchoolIds.length, selectedMajorKeys.length, plan),
+  const decisionExperience = useMemo(
+    () =>
+      buildDecisionExperience({
+        pool: schoolPool,
+        selectedSchoolCount: selectedSchoolIds.length,
+        selectedMajorCount: selectedMajorKeys.length,
+        plan
+      }),
     [schoolPool, selectedSchoolIds.length, selectedMajorKeys.length, plan]
   );
+  const cockpitSignals = decisionExperience.cockpit;
   const filteredMajorOptions = useMemo(() => {
     const query = majorQuery.trim().toLowerCase();
     if (!query) return majorOptions;
@@ -1377,6 +1396,15 @@ export function App() {
         requestMode={requestMode}
       />
 
+      <DecisionUniverseHero
+        experience={decisionExperience}
+        pool={schoolPool}
+        selectedSchoolCount={selectedSchoolIds.length}
+        selectedMajorCount={selectedMajorKeys.length}
+        requestMode={requestMode}
+        onOpen={setSelectedSchool}
+      />
+
       <DecisionCockpit signals={cockpitSignals} requestMode={requestMode} />
 
       <section className="hero-grid">
@@ -1482,6 +1510,7 @@ export function App() {
                 ? "未选择专业：将先按学校可达性生成学校池"
                 : `已选 ${form.majors.length} 个：${form.majors.slice(0, 4).join("、")}`}
             </div>
+            <MajorGuideGateway selectedMajors={form.majors} onPick={(major) => toggleArrayValue("majors", major)} />
             <div className="tag-cloud scroll-cloud major-cloud">
               {filteredMajorOptions.map((major) => (
                 <ToggleTag
@@ -1540,7 +1569,7 @@ export function App() {
             hasPlan={Boolean(plan)}
           />
 
-          {schoolPool && <SchoolPoolOverview pool={schoolPool} />}
+          {schoolPool && <SchoolPoolOverview pool={schoolPool} nebula={decisionExperience.outcomeNebula} />}
 
           <div className="group-tabs" role="tablist" aria-label="学校可达梯度">
             {(Object.keys(groupMeta) as GroupKey[]).map((key) => {

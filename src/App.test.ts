@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildCockpitSignals,
   buildSelectedMajorKey,
   deriveSelectedMajorNames,
   groupReachableSchools,
   removeSelectedMajorsForSchool,
   toggleUniqueSelection
 } from "./App";
+import { buildCockpitSignals } from "./shared/decision-experience";
 import type { ReachableSchoolsResponse, VolunteerPlanResponse } from "./shared/recommendation";
 
 describe("school-first frontend helpers", () => {
@@ -52,7 +52,7 @@ describe("school-first frontend helpers", () => {
   it("builds idle cockpit signals before a school pool exists", () => {
     const signals = buildCockpitSignals(null, 0, 0, null);
 
-    expect(signals.phase).toBe("idle");
+    expect(signals.phase).toBe("profile");
     expect(signals.cards.map((card) => [card.key, card.value])).toEqual([
       ["candidateSchools", "0"],
       ["selection", "0 所 / 0 专业"],
@@ -109,7 +109,7 @@ describe("school-first frontend helpers", () => {
 
     const signals = buildCockpitSignals(pool, 2, 3, null);
 
-    expect(signals.phase).toBe("school_pool");
+    expect(signals.phase).toBe("major_selection");
     expect(signals.cards.map((card) => [card.key, card.value])).toEqual([
       ["candidateSchools", "3"],
       ["selection", "2 所 / 3 专业"],
